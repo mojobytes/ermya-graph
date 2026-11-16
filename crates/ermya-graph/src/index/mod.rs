@@ -116,6 +116,10 @@ enum PropertyValueKey {
     F64Bits(u64),
 }
 
+pub fn property_values_equal(left: &Property, right: &Property) -> bool {
+    PropertyValueKey::from(left) == PropertyValueKey::from(right)
+}
+
 impl From<&Property> for PropertyValueKey {
     fn from(p: &Property) -> Self {
         match p {

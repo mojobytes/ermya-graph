@@ -89,14 +89,14 @@ pub fn parse_with_mode_cached(
     params_signature: u64,
     cache: &cache::QueryCache,
 ) -> ermya_graph::Result<GqlStatement> {
+    if let Some(stmt) = cache.get_query(input, params_signature) {
+        return Ok(stmt);
+    }
+    let stmt = parse_with_mode(input, mode)?;
     let key = cache::CacheKey {
         query: input.to_owned(),
         params_signature,
     };
-    if let Some(stmt) = cache.get(&key) {
-        return Ok(stmt);
-    }
-    let stmt = parse_with_mode(input, mode)?;
     cache.insert(key, stmt.clone());
     Ok(stmt)
 }
@@ -208,7 +208,18 @@ mod tests {
         let query = "MATCH (n) RETURN n";
         parse_with_mode_cached(query, QueryLanguage::CypherCompat, 0, &cache).unwrap();
 
-        let iterations = 50_000u32;
+        // A few milliseconds mostly measure scheduler/CPU warm-up noise.
+        // Keep the existing thresholds, but measure a sustained hot path.
+        for _ in 0..10_000 {
+            std::hint::black_box(
+                parse_with_mode_cached(query, QueryLanguage::CypherCompat, 0, &cache).unwrap(),
+            );
+        }
+        let iterations = if cfg!(debug_assertions) {
+            500_000u32
+        } else {
+            5_000_000u32
+        };
         let start = std::time::Instant::now();
         for _ in 0..iterations {
             parse_with_mode_cached(query, QueryLanguage::CypherCompat, 0, &cache).unwrap();
@@ -361,7 +372,14 @@ mod tests {
     #[test]
     fn gql_native_fastpath_throughput_regression_guard() {
         let q = "MATCH (n) RETURN n";
-        let iters = 20_000u32;
+        for _ in 0..10_000 {
+            std::hint::black_box(parse_with_mode(q, QueryLanguage::CypherCompat).unwrap());
+        }
+        let iters = if cfg!(debug_assertions) {
+            200_000u32
+        } else {
+            2_000_000u32
+        };
         let start = std::time::Instant::now();
         for _ in 0..iters {
             parse_with_mode(q, QueryLanguage::CypherCompat).unwrap();

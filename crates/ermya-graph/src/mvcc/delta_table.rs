@@ -36,6 +36,12 @@ pub struct DeltaTable {
     shards: Vec<RwLock<HashMap<EntityKey, DeltaChainHead>>>,
 }
 
+pub struct VacuumedChain {
+    pub key: EntityKey,
+    pub state: Option<super::delta::EntitySnapshot>,
+    pub history: Vec<super::delta::EntitySnapshot>,
+}
+
 impl DeltaTable {
     /// Creates a table with `shard_count` shards. `shard_count` must be at
     /// least 1; callers pass a power of two (see `MVCC_SHARD_COUNT`).
@@ -108,19 +114,6 @@ impl DeltaTable {
             .and_then(|chain| chain.oldest_delta_of_txn(txn_id))
     }
 
-    /// Extracts and removes every chain that is fully safe to vacuum for
-    /// `watermark`, returning `(key, newest visible state, oldest prior state)`
-    /// for each.
-    ///
-    /// A chain is drained only when ALL its deltas satisfy
-    /// [`Delta::safe_to_vacuum`](super::delta::Delta::safe_to_vacuum): a single
-    /// uncommitted delta or a delta with `commit_ts >= watermark` keeps the
-    /// whole chain in place (a live reader might still resolve its snapshot
-    /// through it). The newest state is the newest delta's `new_state` — a
-    /// `Some(EntitySnapshot::Node|Edge)` to materialize, `Some(Deleted)` to
-    /// tombstone, or `None` (a delta with no new state, treated as a delete).
-    /// The oldest prior is the oldest delta's `prior` — the committed base the
-    /// materialized chain replaced, which the vacuum needs to remove the stale
     /// How many delta chains the table currently holds, across every shard.
     ///
     /// The observable size of the memory committed versions still occupy: it
@@ -139,20 +132,9 @@ impl DeltaTable {
             .sum()
     }
 
-    /// category-B entries (a delete's index/exists removal, or an update's
-    /// old-value index entries).
-    ///
-    /// The caller (the vacuum) materializes each returned state to its page and
-    /// then applies the category-B baja implied by the pair. Draining under the
-    /// shard write lock keeps the extract-and-remove atomic per shard.
-    pub fn drain_vacuumable(
-        &self,
-        watermark: Option<u64>,
-    ) -> Vec<(
-        EntityKey,
-        Option<super::delta::EntitySnapshot>,
-        Option<super::delta::EntitySnapshot>,
-    )> {
+    /// Drain fully committed chains older than every active snapshot, retaining
+    /// their versions so vacuum can remove all historical index entries.
+    pub(crate) fn drain_vacuumable(&self, watermark: Option<u64>) -> Vec<VacuumedChain> {
         let mut out = Vec::new();
         for shard in &self.shards {
             let mut guard = shard.write().expect("delta table shard lock poisoned");
@@ -164,8 +146,17 @@ impl DeltaTable {
             for key in vacuumable {
                 if let Some(chain) = guard.remove(&key) {
                     let newest = chain.newest().and_then(|d| d.new_state().cloned());
-                    let oldest_prior = chain.oldest().and_then(|d| d.prior().cloned());
-                    out.push((key, newest, oldest_prior));
+                    let history = chain
+                        .iter()
+                        .flat_map(|delta| {
+                            delta.prior().into_iter().chain(delta.new_state()).cloned()
+                        })
+                        .collect();
+                    out.push(VacuumedChain {
+                        key,
+                        state: newest,
+                        history,
+                    });
                 }
             }
         }
@@ -276,8 +267,8 @@ mod tests {
 
         let drained = table.drain_vacuumable(None); // no live txn: all safe
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].0, key);
-        match &drained[0].1 {
+        assert_eq!(drained[0].key, key);
+        match &drained[0].state {
             Some(EntitySnapshot::Node(n)) => assert_eq!(n.label(), "New"),
             other => panic!("expected newest node state, got {other:?}"),
         }
@@ -329,6 +320,6 @@ mod tests {
 
         let drained = table.drain_vacuumable(None);
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].1, Some(EntitySnapshot::Deleted));
+        assert_eq!(drained[0].state, Some(EntitySnapshot::Deleted));
     }
 }

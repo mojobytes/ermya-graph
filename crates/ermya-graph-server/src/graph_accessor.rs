@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use ermya_graph::gql::{self, GqlMutationResult, GqlQuery, GqlValue};
 use ermya_graph::Graph;
+use ermya_graph::gql::{self, GqlMutationResult, GqlQuery, GqlValue};
 
 /// A single result row: column name → value.
 pub type ResultRow = std::collections::HashMap<String, GqlValue>;
@@ -67,6 +67,8 @@ pub const ENGINE_BATCH_LIMIT_PREFIX: &str = "__TG_BATCH_LIMIT__: ";
 /// `map_txn_error` path cannot produce this variant.
 pub const ENGINE_TXN_MEMORY_CAP_PREFIX: &str = "__TG_TXN_MEMORY_CAP__: ";
 
+pub const ENGINE_WRITE_CONFLICT_PREFIX: &str = "__TG_WRITE_CONFLICT__: ";
+
 /// Sentinel prefix used when a node could not be deleted because it still had
 /// relationships and the query omitted `DETACH`
 /// (`ermya_graph::Error::DeleteConnectedNode`). The Bolt handler matches this
@@ -91,7 +93,9 @@ pub const ENGINE_APPEND_ONLY_IN_TXN_PREFIX: &str = "__TG_APPEND_ONLY_IN_TXN__: "
 // The cost is negligible: `Error` is an enum, not a heavyweight struct.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn engine_err_to_string(e: ermya_graph::Error) -> String {
-    if matches!(e, ermya_graph::Error::QuotaExceeded { .. }) {
+    if matches!(e, ermya_graph::Error::WriteConflict) {
+        format!("{ENGINE_WRITE_CONFLICT_PREFIX}{e}")
+    } else if matches!(e, ermya_graph::Error::QuotaExceeded { .. }) {
         format!("{ENGINE_QUOTA_EXCEEDED_PREFIX}{e}")
     } else if matches!(e, ermya_graph::Error::ConstraintViolation { .. }) {
         format!("{ENGINE_CONSTRAINT_VIOLATED_PREFIX}{e}")

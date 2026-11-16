@@ -122,9 +122,18 @@ pub type AccessorFactory =
 /// Bolt failure `(code, message)`. Transaction misuse — an inactive `txn_id`,
 /// MVCC disabled, or the per-transaction memory cap tripping — is a client
 /// request problem, so it maps to `Neo.ClientError.Request.Invalid`; the
-/// engine's message is passed through verbatim.
+/// engine's message is sanitized before returning it. Commit-time constraint
+/// violations and write conflicts retain their dedicated wire codes.
 fn map_txn_error(engine_msg: &str) -> (&'static str, String) {
-    ("Neo.ClientError.Request.Invalid", engine_msg.to_owned())
+    if engine_msg.starts_with(crate::graph_accessor::ENGINE_CONSTRAINT_VIOLATED_PREFIX)
+        || engine_msg.starts_with(crate::graph_accessor::ENGINE_WRITE_CONFLICT_PREFIX)
+    {
+        return map_sideeffect_free_engine_error(engine_msg);
+    }
+    (
+        "Neo.ClientError.Request.Invalid",
+        sanitize_engine_error_for_wire(engine_msg),
+    )
 }
 
 /// Per-connection Bolt handler.
@@ -1777,21 +1786,22 @@ where
         Ok(false)
     }
 
-    async fn handle_reset(&mut self) -> Result<bool> {
-        self.failed = false;
-        self.pending_result = None;
-        // RESET returns the session to a clean state: an open explicit
-        // transaction is abandoned (rolled back), matching how a driver expects
-        // RESET to clear in-flight work.
+    fn rollback_open_transaction(&mut self) {
         if let Some(txn_id) = self.open_txn.take()
             && let Some(accessor) = self.session_accessor.as_deref()
             && let Err(e) = accessor.rollback_txn(txn_id)
         {
             tracing::warn!(
                 conn = self.connection_id,
-                "rollback of open txn during RESET failed: {e}"
+                "rollback of abandoned transaction failed: {e}"
             );
         }
+    }
+
+    async fn handle_reset(&mut self) -> Result<bool> {
+        self.failed = false;
+        self.pending_result = None;
+        self.rollback_open_transaction();
         if let Err(e) = self.flush_pending_batch() {
             tracing::warn!(conn = self.connection_id, "flush during RESET failed: {e}");
         }
@@ -1868,9 +1878,6 @@ where
             .await?;
             return Ok(false);
         };
-        // Clear the session state up front: whether the engine call succeeds or
-        // fails, the transaction is no longer the session's open one.
-        self.open_txn = None;
         let accessor = self
             .session_accessor
             .as_deref()
@@ -1882,10 +1889,16 @@ where
         };
         match outcome {
             Ok(()) => {
+                self.open_txn = None;
                 self.send_response(&BoltResponse::Success { metadata: vec![] })
                     .await?;
             }
             Err(e) => {
+                if commit {
+                    self.rollback_open_transaction();
+                } else {
+                    self.open_txn = None;
+                }
                 self.failed = true;
                 let (code, message) = map_txn_error(&e);
                 self.send_failure(code, &message).await?;
@@ -2248,6 +2261,7 @@ where
     /// so `closed_window_drops` reports unconditionally when drops
     /// accumulated; a window with zero drops stays silent.
     fn drop(&mut self) {
+        self.rollback_open_transaction();
         self.drain_slow_query_drops(std::time::Instant::now() + std::time::Duration::from_secs(61));
         // v0.6.0 Fase 2 Task 5 eje 4 — one aggregate bandwidth-throttle
         // audit entry per connection, emitted only when the cap actually
@@ -2346,6 +2360,12 @@ pub fn map_sideeffect_free_engine_error(msg: &str) -> (&'static str, String) {
         // distinguish a uniqueness failure from a generic execution error.
         (
             "Neo.ClientError.Schema.ConstraintValidationFailed",
+            sanitize_engine_error_for_wire(rest),
+        )
+    } else if let Some(rest) = msg.strip_prefix(crate::graph_accessor::ENGINE_WRITE_CONFLICT_PREFIX)
+    {
+        (
+            "Neo.TransientError.Transaction.Outdated",
             sanitize_engine_error_for_wire(rest),
         )
     } else if let Some(rest) = msg.strip_prefix(crate::graph_accessor::ENGINE_TXN_MEMORY_CAP_PREFIX)

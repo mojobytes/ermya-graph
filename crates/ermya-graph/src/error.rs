@@ -63,6 +63,9 @@ impl fmt::Display for EdgeId {
 /// All errors produced by `ErmyaGraph`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("transaction write conflict; retry in a new transaction")]
+    WriteConflict,
+
     #[error("node not found: {0}")]
     NodeNotFound(NodeId),
 
