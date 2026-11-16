@@ -449,8 +449,9 @@ async fn start_server_inner(
     // The Community manager has no sessions to drain but still
     // consolidates its journal here.
     registry
-        .close_all(Duration::from_secs(config.shutdown_timeout_seconds))
-        .await;
+        .close_all_checked(Duration::from_secs(config.shutdown_timeout_seconds))
+        .await
+        .map_err(ServerError::Registry)?;
 
     // Keep the system-graph flock alive until the accept loop exits.
     drop(runtime.system_lock);
@@ -550,8 +551,9 @@ async fn start_server_inner(
     // Drain live database entries before releasing the system-graph
     // flock — see the matching block in the plain-tcp entry point above.
     registry
-        .close_all(Duration::from_secs(config.shutdown_timeout_seconds))
-        .await;
+        .close_all_checked(Duration::from_secs(config.shutdown_timeout_seconds))
+        .await
+        .map_err(ServerError::Registry)?;
 
     drop(runtime.system_lock);
     Ok(ServerHandle {

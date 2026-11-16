@@ -5,6 +5,15 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.4] - 2026-11-16
+
+- Preserve committed MVCC versions through checkpoints, failed flushes and shutdown.
+- Preserve old-reader property blobs and reject inconsistent free-list references.
+- Rebuild label indexes after WAL recovery and retain sparse record IDs on reopen.
+- Report missing property blobs and propagate shutdown persistence errors.
+- Add bounded offline recovery with provenance and explicit historical-data decisions.
+- Test acknowledged writes across graceful shutdown, process death and repeated reopen.
+
 ## [0.13.3] - 2026-11-16
 
 - Bind and authorize databases on Bolt BEGIN, including the Community default.

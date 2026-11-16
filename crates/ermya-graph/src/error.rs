@@ -92,6 +92,13 @@ pub enum Error {
         actual: u32,
     },
 
+    #[error("missing property blob for {entity_kind} {entity_id} in overflow page {page_id}")]
+    MissingPropertyBlob {
+        entity_kind: &'static str,
+        entity_id: u64,
+        page_id: u32,
+    },
+
     #[error("buffer pool exhausted: all pages are pinned")]
     BufferPoolExhausted,
 

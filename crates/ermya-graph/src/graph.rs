@@ -30,6 +30,7 @@ use crate::storage::memory::MemoryBackend;
 use crate::storage::page::{PAGE_HEADER_SIZE, PageHeader, PageType, finalize_page, magic};
 use crate::wal::record::WalRecord;
 
+mod storage_validation;
 mod transaction_validation;
 
 /// Default adjacency cache capacity for in-memory graphs.
@@ -432,6 +433,7 @@ impl Graph {
             graph.schema_catalog = cat;
         }
 
+        graph.validate_free_references()?;
         graph.rebuild_indexes()?;
 
         Ok(graph)
@@ -991,11 +993,15 @@ impl Graph {
             .delta_table
             .as_ref()
             .ok_or(Error::MvccNotEnabled)?
-            .drain_vacuumable(watermark);
+            .vacuumable(watermark);
         let count = drained.len();
         for chain in drained {
             self.materialize_to_page(chain.key, chain.state.as_ref())?;
             self.apply_vacuum_category_b(chain.key, chain.state.as_ref(), &chain.history)?;
+            self.delta_table
+                .as_ref()
+                .ok_or(Error::MvccNotEnabled)?
+                .finish_vacuum(chain.key);
         }
         Ok(count)
     }
@@ -3311,30 +3317,23 @@ impl Graph {
         Ok(())
     }
 
-    /// Flushes all dirty pages to persistent storage, then checkpoints and
-    /// truncates the write-ahead log.
+    /// Materializes committed versions that no active snapshot needs, then
+    /// flushes pages, indexes and schema to persistent storage. Truncates the
+    /// WAL only when no version chains remain; active readers or writers can
+    /// require retaining it for recovery.
     ///
-    /// **This is the only operation that checkpoints on demand**, and the only
-    /// hard guarantee that the WAL is empty when it returns. It is not the only
-    /// thing that bounds WAL growth: since issue #58, closing the outermost
-    /// batch also checkpoints once the journal has outgrown
-    /// [`GraphConfig::wal_checkpoint_threshold_bytes`](crate::GraphConfig::wal_checkpoint_threshold_bytes).
-    /// Nothing else does — not `wal_sync`, and there is still no periodic or
-    /// background checkpoint.
-    ///
-    /// The automatic checkpoint bounds the journal in normal operation, so a
-    /// long-running writer no longer needs to call this on a schedule to avoid
-    /// the failure that motivated #58 (a measured run reached 3.55 GB of WAL
-    /// and 22 minutes of startup, against 0.9 s once checkpointed). Call it
-    /// anyway when a specific point must be materialised — before a backup, or
-    /// on shutdown — or when automatic checkpointing is disabled by setting
-    /// that threshold to `None`, which restores the previous behaviour of
-    /// unbounded growth between explicit flushes.
+    /// Closing the outermost batch also attempts a checkpoint once the journal
+    /// exceeds `GraphConfig::wal_checkpoint_threshold_bytes`. Call this method
+    /// before a backup or shutdown, including when automatic checkpoints are
+    /// disabled. A retained WAL is part of the recoverable store.
     ///
     /// # Errors
     ///
     /// Returns a storage error if the flush fails.
     pub fn flush(&mut self) -> Result<()> {
+        if self.mvcc_enabled() {
+            self.vacuum_once()?;
+        }
         self.storage.meta_mut().strings_write_offset = self.string_heap.write_offset();
 
         // Persist label indexes before flushing storage (MemoryBackend is a no-op)
@@ -3351,8 +3350,12 @@ impl Graph {
 
         self.storage.flush()?;
 
-        // Checkpoint and truncate WAL after successful flush — all data is on disk.
-        self.storage.wal_checkpoint_and_truncate()
+        // A live snapshot or uncommitted writer can prevent materialization.
+        // Retain the entire journal until all version chains have reached disk.
+        if self.pending_version_chains() == 0 {
+            self.storage.wal_checkpoint_and_truncate()?;
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------
@@ -4408,26 +4411,24 @@ impl Graph {
 
     /// Reads back an entity's overflowed properties from `page_id`.
     ///
-    /// Overflow pages come in two shapes — a page shared by several entities,
-    /// and a chain dedicated to one oversized blob — so the page itself decides
-    /// how to read it. A shared page whose directory has no live entry for this
-    /// entity yields empty bytes rather than an error: that is what a stale
-    /// reference means, and returning whoever occupies that space now would be
-    /// worse than returning nothing.
+    /// A missing slab entry is corruption, not an empty property map. Include
+    /// the owning entity and page in the error so offline recovery can identify it.
     fn read_overflowed_props(
         &self,
         entity: (u64, prop_slab_codec::EntityKind),
         page_id: u32,
     ) -> Result<Vec<u8>> {
         let (entity_id, kind) = entity;
-        if prop_slab_codec::is_slab_page(self.storage.as_ref(), page_id).unwrap_or(false) {
-            return Ok(prop_slab_codec::read_blob(
-                self.storage.as_ref(),
-                page_id,
-                entity_id,
-                kind,
-            )?
-            .unwrap_or_default());
+        if prop_slab_codec::is_slab_page(self.storage.as_ref(), page_id)? {
+            return prop_slab_codec::read_blob(self.storage.as_ref(), page_id, entity_id, kind)?
+                .ok_or(Error::MissingPropertyBlob {
+                    entity_kind: match kind {
+                        prop_slab_codec::EntityKind::Node => "node",
+                        prop_slab_codec::EntityKind::Edge => "edge",
+                    },
+                    entity_id,
+                    page_id,
+                });
         }
         overflow_codec::read_overflow(self.storage.as_ref(), page_id)
     }
@@ -4460,6 +4461,9 @@ impl Graph {
         // Try the page last known to have room.
         if let Some(page_id) = self.prop_slab_open_page
             && self.slab_page_has_room(page_id, bytes.len())
+            && (!self.mvcc_enabled()
+                || prop_slab_codec::read_blob(self.storage.as_ref(), page_id, entity_id, kind)?
+                    .is_none())
         {
             prop_slab_codec::write_blob(self.storage.as_mut(), page_id, entity_id, kind, bytes)?;
             return Ok(page_id);
@@ -4534,7 +4538,7 @@ impl Graph {
         let page = self.storage.read_page(DataFile::Nodes, page_idx).ok()?;
         let offset = PAGE_HEADER_SIZE + slot_idx * NODE_SLOT_SIZE;
         let slot: [u8; NODE_SLOT_SIZE] = page[offset..offset + NODE_SLOT_SIZE].try_into().ok()?;
-        node_codec::slot_needs_prop_resolve(&slot)
+        (slot[0] == SLOT_LIVE && node_codec::slot_needs_prop_resolve(&slot))
             .then(|| node_codec::slot_prop_overflow_ref(&slot))
     }
 
@@ -4544,7 +4548,7 @@ impl Graph {
         let page = self.storage.read_page(DataFile::Edges, page_idx).ok()?;
         let offset = PAGE_HEADER_SIZE + slot_idx * EDGE_SLOT_SIZE;
         let slot: [u8; EDGE_SLOT_SIZE] = page[offset..offset + EDGE_SLOT_SIZE].try_into().ok()?;
-        edge_codec::edge_slot_needs_prop_resolve(&slot)
+        (slot[0] == SLOT_LIVE && edge_codec::edge_slot_needs_prop_resolve(&slot))
             .then(|| edge_codec::edge_slot_prop_overflow_ref(&slot))
     }
 
@@ -4773,7 +4777,7 @@ impl Graph {
         let offset = PAGE_HEADER_SIZE + slot_idx * slot_size;
         page[offset..offset + slot_size].copy_from_slice(slot_buf);
 
-        let slot_count = Self::count_used_slots_on_page(&page, slot_size);
+        let slot_count = Self::slot_scan_bound(&page, slot_size);
         finalize_page(&mut page, magic_bytes, 1, page_type, slot_count);
         self.storage.write_page(file, page_idx, &page)
     }
@@ -4851,7 +4855,7 @@ impl Graph {
 
         page[offset] = SLOT_TOMBSTONE;
 
-        let slot_count = Self::count_used_slots_on_page(&page, slot_size);
+        let slot_count = Self::slot_scan_bound(&page, slot_size);
         finalize_page(&mut page, magic_bytes, 1, page_type, slot_count);
         self.storage.write_page(file, page_idx, &page)?;
 
@@ -5081,10 +5085,7 @@ impl Graph {
         }
     }
 
-    fn count_used_slots_on_page(
-        page: &[u8; crate::storage::page::PAGE_SIZE],
-        slot_size: usize,
-    ) -> u16 {
+    fn slot_scan_bound(page: &[u8; crate::storage::page::PAGE_SIZE], slot_size: usize) -> u16 {
         let mut count: u16 = 0;
         for i in 0..SLOTS_PER_PAGE {
             let offset = PAGE_HEADER_SIZE + i * slot_size;
@@ -5093,7 +5094,8 @@ impl Graph {
             }
             let flags = page[offset];
             if flags == SLOT_LIVE || flags == SLOT_TOMBSTONE {
-                count += 1;
+                // IDs may have gaps after rollback; slot_count bounds the scan.
+                count = u16::try_from(i + 1).expect("page has at most 31 slots");
             }
         }
         count

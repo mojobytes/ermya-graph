@@ -228,7 +228,13 @@ impl GraphRegistry for SingleDatabaseManager {
         ))
     }
 
-    async fn close_all(&self, _timeout: Duration) {
+    async fn close_all(&self, timeout: Duration) {
+        if let Err(error) = self.close_all_checked(timeout).await {
+            tracing::error!(database = %self.db_name, %error, "shutdown flush failed");
+        }
+    }
+
+    async fn close_all_checked(&self, _timeout: Duration) -> Result<(), RegistryError> {
         // Nothing to *drain*: there is no session accounting to wait on.
         // But the checkpoint is not optional. `Graph` has no `Drop` impl, and
         // this manager holds its `Arc` for the life of the process, so nothing
@@ -246,13 +252,13 @@ impl GraphRegistry for SingleDatabaseManager {
         })
         .await;
         match flushed {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::error!(database = %db_name, error = %e, "shutdown flush failed");
-            }
-            Err(join_err) => {
-                tracing::error!(database = %db_name, error = %join_err, "shutdown flush panicked");
-            }
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(RegistryError::DatabaseUnavailable(format!(
+                "closing {db_name}: {error}"
+            ))),
+            Err(error) => Err(RegistryError::DatabaseUnavailable(format!(
+                "closing {db_name}: {error}"
+            ))),
         }
     }
 }

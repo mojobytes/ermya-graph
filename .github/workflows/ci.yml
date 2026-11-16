@@ -53,6 +53,8 @@ jobs:
           python3 -m pip install neo4j==6.4.1
           python3 scripts/test_issue10_bolt.py target/debug/ermya-graph-server
           python3 scripts/test_issue11_bolt.py target/debug/ermya-graph-server
+          python3 scripts/test_issue17_restart.py target/debug/ermya-graph-server
+          python3 -m unittest discover -s scripts -p test_issue17_recovery.py
       - run: cargo package -p ermya-graph --locked
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit

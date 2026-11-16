@@ -114,6 +114,47 @@ pub fn take_free_page<S: FreeListStore + ?Sized>(
     Ok(Some(head))
 }
 
+/// Collects reusable and directory pages, rejecting cycles and duplicate entries.
+/// Directory pages also belong to the allocator and cannot hold live records.
+pub fn collect_free_pages(
+    meta: &GraphMeta,
+    file: DataFile,
+    mut read: impl FnMut(PageId) -> Result<PageBuf>,
+) -> Result<std::collections::HashSet<PageId>> {
+    let mut pages = std::collections::HashSet::new();
+    let limit = match file {
+        DataFile::Nodes => meta.nodes_page_count,
+        DataFile::Edges => meta.edges_page_count,
+        DataFile::Adjacency => meta.adj_page_count,
+        DataFile::Strings => meta.strings_page_count,
+        DataFile::Overflow => meta.overflow_page_count,
+    };
+    let mut insert = |id| {
+        if id >= limit || !pages.insert(id) {
+            return Err(crate::Error::CorruptPage {
+                file: file.file_name(),
+                page_id: id,
+                reason: "invalid or duplicate free-page reference",
+            });
+        }
+        Ok(())
+    };
+    let spare = meta.free_spare_page(file);
+    if spare != FREE_SPARE_EMPTY {
+        insert(spare)?;
+    }
+    let mut head = meta.free_directory_head(file);
+    while head != FREE_DIRECTORY_EMPTY {
+        insert(head)?;
+        let directory = free_directory_codec::decode(&*read(head)?, file.file_name(), head)?;
+        for id in directory.entries {
+            insert(id)?;
+        }
+        head = directory.next;
+    }
+    Ok(pages)
+}
+
 /// Returns `page_id` to `file`'s free directory.
 ///
 /// # Errors
@@ -128,6 +169,14 @@ pub fn release_page<S: FreeListStore + ?Sized>(
     file: DataFile,
     page_id: PageId,
 ) -> Result<()> {
+    let free = collect_free_pages(store.meta_ref(), file, |id| store.read_page_raw(file, id))?;
+    if free.contains(&page_id) {
+        return Err(crate::Error::CorruptPage {
+            file: file.file_name(),
+            page_id,
+            reason: "page has already been released",
+        });
+    }
     // Hold the first free page in metadata rather than spending it on a
     // directory. Releasing one page and reallocating it then costs nothing and
     // touches no page at all.

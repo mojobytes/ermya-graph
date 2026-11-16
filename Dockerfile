@@ -10,7 +10,7 @@ FROM debian:bookworm-slim AS runtime
 
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Ermya Graph Community" \
-      org.opencontainers.image.version="0.13.3" \
+      org.opencontainers.image.version="0.13.4" \
       org.opencontainers.image.revision=$SOURCE_REVISION \
       org.opencontainers.image.source="https://github.com/mojobytes/ermya-graph"
 

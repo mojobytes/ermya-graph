@@ -48,4 +48,11 @@ pub trait GraphRegistry: Send + Sync {
     /// Drain and close every open database, waiting up to `timeout` for
     /// active sessions to finish.
     async fn close_all(&self, timeout: Duration);
+
+    /// Close databases and surface persistence failures to the process owner.
+    /// Existing registry implementations retain their legacy close behavior.
+    async fn close_all_checked(&self, timeout: Duration) -> Result<(), RegistryError> {
+        self.close_all(timeout).await;
+        Ok(())
+    }
 }
