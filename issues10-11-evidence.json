@@ -132,5 +132,113 @@
     }
   },
   "performance_note": "Initial concurrent run failed adjacency and parser timing gates. Sequential functional run passed; isolated parser run initially below threshold, then both baseline and candidate passed unchanged thresholds in consecutive comparison runs. No thresholds reduced.",
-  "scope": "Community single database aliases retained; relationship SET support is unchanged. Existing instance stays on 0.13.2."
+  "scope": "Community single database aliases retained; relationship SET support is unchanged. Existing instance stays on 0.13.2.",
+  "local_image": {
+    "10": {
+      "explicit_database": {
+        "pass": true
+      },
+      "default_database": {
+        "pass": true
+      },
+      "async_execute_query": {
+        "pass": true
+      },
+      "image": {
+        "pass": true,
+        "version": "0.13.3",
+        "agent": "Neo4j/0.13.3",
+        "image_id": "sha256:ff6c91d8946a6985133ec9978d40f3627d52d189e895a89e493a0e31348b2127",
+        "source_revision": "276fa310b63174e875c42f049ae72fb27d9b0d54"
+      }
+    },
+    "tag": "ermya-graph-community:0.13.3",
+    "11": {
+      "node_read": {
+        "pass": true
+      },
+      "targeted_mutations": {
+        "pass": true
+      },
+      "relationship_mutation": {
+        "pass": true
+      },
+      "no_interpolation": {
+        "pass": true
+      },
+      "null_is_not_wildcard": {
+        "pass": true
+      },
+      "missing_parameter": {
+        "pass": true,
+        "code": "Neo.ClientError.Statement.ParameterMissing"
+      },
+      "cleanup": {
+        "pass": true
+      },
+      "image": {
+        "pass": true,
+        "version": "0.13.3",
+        "agent": "Neo4j/0.13.3",
+        "image_id": "sha256:ff6c91d8946a6985133ec9978d40f3627d52d189e895a89e493a0e31348b2127",
+        "source_revision": "276fa310b63174e875c42f049ae72fb27d9b0d54"
+      }
+    },
+    "14": {
+      "unique": {
+        "clients": [
+          {
+            "committed": true,
+            "value": 1
+          },
+          {
+            "committed": false,
+            "code": "Neo.ClientError.Schema.ConstraintValidationFailed",
+            "message": "constraint violation: unique constraint on :Issue14Uniqueebc295a7bded49efa3f1f909d364c893(key) already has value String(\"same\")"
+          }
+        ],
+        "rows": [
+          {
+            "key": "same"
+          }
+        ],
+        "pass": true
+      },
+      "cas": {
+        "clients": [
+          {
+            "committed": false,
+            "code": "Neo.TransientError.Transaction.Outdated",
+            "message": "transaction write conflict; retry in a new transaction"
+          },
+          {
+            "committed": true,
+            "value": 2
+          }
+        ],
+        "rows": [
+          {
+            "version": 2
+          }
+        ],
+        "pass": true
+      },
+      "delete": {
+        "pass": true,
+        "rows": []
+      },
+      "image": {
+        "pass": true,
+        "version": "0.13.3",
+        "agent": "Neo4j/0.13.3",
+        "image_id": "sha256:ff6c91d8946a6985133ec9978d40f3627d52d189e895a89e493a0e31348b2127",
+        "source_revision": "276fa310b63174e875c42f049ae72fb27d9b0d54"
+      }
+    }
+  },
+  "ci": {
+    "url": "https://github.com/mojobytes/ermya-graph/actions/runs/43942488236",
+    "commit": "276fa310b63174e875c42f049ae72fb27d9b0d54",
+    "result": "all six jobs passed, including Rust package/audit and Python 3.15.2/3.12/3.9"
+  }
 }
