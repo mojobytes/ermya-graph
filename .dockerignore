@@ -8,3 +8,10 @@ data
 **/.pytest_cache
 **/.venv
 
+
+.private
+.env
+.env.*
+.aws
+.codex
+.agents

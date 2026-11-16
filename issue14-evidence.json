@@ -4,7 +4,7 @@
   "reported_image": "ermya-graph-community:0.13.0",
   "observed_container_image_id": "sha256:878e398224e3e5913dbdeec4459c445c45defb6e8756d455daf5f865c22385a6",
   "reported_image_source_commit": null,
-  "candidate_version": "0.13.1",
+  "candidate_version": "0.13.2",
   "driver": "neo4j==4.4.11",
   "baseline_build": "cargo build --locked -p ermya-graph-server --bin ermya-graph-server: PASS",
   "ci_required": [
@@ -149,7 +149,7 @@
   ],
   "candidate_binary_sha256": "d808fa3b9c527e5eba915f019cacf5fd69328e4a7cc61b3705e73e2c2b385da9",
   "candidate_build_command": "cargo +1.88.0 build --offline --locked -p ermya-graph-server --bin ermya-graph-server",
-  "candidate_source_state": "uncommitted branch fix/issue-14-transaction-integrity based on baseline_commit",
+  "candidate_source_state": "Fix commit ee47794050c66e68097691c981de7da2651ec85d; versioned image commit recorded in OCI metadata",
   "official_driver_final": {
     "unique": {
       "clients": [
@@ -205,5 +205,6 @@
       "committed": true,
       "remaining": 0
     }
-  }
+  },
+  "pr": "https://github.com/mojobytes/ermya-graph/pull/15"
 }

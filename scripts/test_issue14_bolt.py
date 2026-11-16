@@ -2,6 +2,7 @@
 
 Run with: uv run --no-project --with neo4j==4.4.11 python
 scripts/test_issue14_bolt.py target/debug/ermya-graph-server
+Or use --image ermya-graph-community:0.13.2 instead of a binary path.
 """
 
 import concurrent.futures
@@ -102,7 +103,8 @@ def probe(uri):
 
 
 def main():
-    binary = str(Path(sys.argv[1]).resolve())
+    container_image = sys.argv[2] if sys.argv[1] == "--image" else None
+    binary = None if container_image else str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix="ermya-issue14-") as directory:
         root = Path(directory)
         cert, key = root / "cert.pem", root / "key.pem"
@@ -122,8 +124,26 @@ def main():
             "ERMYA_NO_AUTH": "1", "ERMYA_PASSWORD": "isolated-test-only-14",
             "ERMYA_VACUUM_INTERVAL_SECONDS": "0", "ERMYA_QUERIES_MAX_PER_SECOND": "0",
         })
+        container_name = "ermya-issue14-" + uuid.uuid4().hex if container_image else None
+        command = [binary]
+        if container_image:
+            # Ephemeral self-signed test key, readable by the image's non-root user.
+            root.chmod(0o755)
+            cert.chmod(0o644)
+            key.chmod(0o644)
+            command = ["docker", "run", "--rm", "--name", container_name,
+                       "-p", f"127.0.0.1:{port}:7687",
+                       "-v", f"{root}:/test-tls:ro"]
+            env.update({"ERMYA_BIND": "0.0.0.0:7687",
+                        "ERMYA_DATA_DIR": "/var/lib/ermya",
+                        "ERMYA_TLS_CERT": "/test-tls/cert.pem",
+                        "ERMYA_TLS_KEY": "/test-tls/key.pem"})
+            for name, value in env.items():
+                if name.startswith("ERMYA_"):
+                    command.extend(["-e", f"{name}={value}"])
+            command.append(container_image)
         with (root / "server.log").open("w+") as log:
-            server = subprocess.Popen([binary], env=env, stdout=log, stderr=log)
+            server = subprocess.Popen(command, env=env, stdout=log, stderr=log)
             try:
                 for _ in range(200):
                     if server.poll() is not None:
@@ -137,9 +157,23 @@ def main():
                 else:
                     raise TimeoutError("isolated server did not listen")
                 report = probe(f"bolt+ssc://127.0.0.1:{port}")
+                if container_image:
+                    metadata = json.loads(subprocess.check_output(
+                        ["docker", "image", "inspect", container_image]))[0]
+                    version = metadata["Config"]["Labels"]["org.opencontainers.image.version"]
+                    with GraphDatabase.driver(f"bolt+ssc://127.0.0.1:{port}", auth=None) as driver:
+                        agent = driver.get_server_info().agent
+                    report["image"] = {"pass": bool(version) and agent == f"Neo4j/{version}",
+                                       "version": version, "agent": agent,
+                                       "image_id": metadata["Id"],
+                                       "source_revision": metadata["Config"]["Labels"]["org.opencontainers.image.revision"]}
                 print(json.dumps(report, indent=2))
                 return 0 if all(case["pass"] for case in report.values()) else 1
             finally:
+                if container_name:
+                    subprocess.run(["docker", "stop", "--time", "5", container_name],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=15, check=False)
                 server.terminate()
                 try:
                     server.wait(timeout=10)
