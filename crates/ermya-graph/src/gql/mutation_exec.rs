@@ -324,7 +324,7 @@ fn apply_one_set_assignment(
     params: &HashMap<String, GqlValue>,
     txn_id: Option<u64>,
 ) -> crate::Result<u64> {
-    use crate::gql::{gql_value_to_property, SetAssignment};
+    use crate::gql::{SetAssignment, gql_value_to_property};
 
     let empty_pm = PatternMatch::empty();
 
@@ -948,7 +948,7 @@ pub fn apply_unwind_create_body(
     rows: &[HashMap<String, NodeId>],
     txn_id: Option<u64>,
 ) -> crate::Result<GqlMutationResult> {
-    use crate::gql::{resolve_create_props, CreatePattern};
+    use crate::gql::{CreatePattern, resolve_create_props};
 
     let mut nodes_created: u64 = 0;
     let mut edges_created: u64 = 0;

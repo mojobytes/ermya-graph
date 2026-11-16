@@ -92,6 +92,7 @@ impl DeltaChainHead {
 
     /// Returns the oldest delta (last-yielded), or `None` if empty. Used by the
     /// vacuum to source the committed base a materialized chain replaced.
+    #[cfg(test)]
     pub fn oldest(&self) -> Option<&Delta> {
         self.0.last()
     }

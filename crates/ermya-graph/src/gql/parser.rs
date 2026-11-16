@@ -7,6 +7,7 @@
 //! bounded look-ahead (at most 2 tokens) and explicit precedence levels for
 //! the expression sub-grammar.
 
+use crate::Error;
 use crate::gql::ast::{
     AggFunc, AstDirection, BinOp, ConstReturnQuery, CreateClause, CreatePattern, DeleteClause,
     EdgeLength, EdgePattern, Expr, GqlQuery, GqlStatement, LimitClause, ListPredKind, Literal,
@@ -15,7 +16,6 @@ use crate::gql::ast::{
     WhereClause,
 };
 use crate::gql::token::{self, Span, SpannedToken, Token};
-use crate::Error;
 
 // ── Internal struct for edge bracket content ──────────────────────────────────
 

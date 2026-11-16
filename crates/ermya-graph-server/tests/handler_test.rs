@@ -2047,8 +2047,14 @@ async fn bandwidth_cap_throttles_large_pull() {
         "PULL must stream all 50 seeded rows, got {}",
         records.len()
     );
-    // Closing the connection must emit one aggregate bandwidth_throttled
-    // audit event with a non-zero sleep count and duration.
+    // Wait for handler teardown before stopping the audit writer. EOF means
+    // the handler's Drop has queued its aggregate bandwidth event.
+    bolt_send(&mut writer, &BoltRequest::Goodbye).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), reader.read_message())
+        .await
+        .expect("handler must close after GOODBYE")
+        .expect("read server EOF");
+    assert!(closed.is_none(), "GOODBYE must close without a response");
     drop(writer);
     drop(reader);
     let events = common::read_audit_events(&audit_tx, &audit_path).await;

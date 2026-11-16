@@ -145,6 +145,33 @@ Schema definition, procedure calls, and administration statements are not
 allowed inside an explicit transaction. Commit or roll back the transaction
 first.
 
+### Concurrent writes
+
+Explicit transactions read an MVCC snapshot and their own pending writes.
+Before committing, the engine validates the final writes against current
+committed versions. Two transactions that update or delete the same entity
+from an old snapshot cannot both commit: the first commit wins; the other
+receives `Neo.TransientError.Transaction.Outdated`. Retry the whole transaction
+with a new snapshot. This is write-conflict detection, not a guarantee of
+serializable predicate reads.
+
+Declared `UNIQUE` constraints also apply at commit, including duplicates within
+one transaction. A violation returns
+`Neo.ClientError.Schema.ConstraintValidationFailed`; none of the rejected
+transaction's writes become visible or durable. Bolt releases a rejected
+transaction; send `RESET` before reusing the session. Embedded callers must
+roll back a transaction whose commit was rejected.
+
+Autocommit node updates and deletes participate in MVCC conflict detection.
+Deleting a committed node does not require waiting for the background vacuum.
+
+The isolated driver regression can be run with:
+
+```bash
+cargo build --locked -p ermya-graph-server --bin ermya-graph-server
+uv run --no-project --with neo4j==4.4.11 python scripts/test_issue14_bolt.py target/debug/ermya-graph-server
+```
+
 ## Configuration
 
 Settings are read from `/etc/ermya/ermya.toml` by default. Environment
@@ -221,3 +248,9 @@ backups) live in a separate repository and are not part of this one.
 ---
 
 [ermya.com](https://ermya.com)
+
+Build the versioned Community image locally with `docker build --build-arg
+SOURCE_REVISION=<git-commit> -t ermya-graph-community:0.13.2 .`. Validate it in an
+isolated container using `uv run --no-project --with neo4j==4.4.11 python
+scripts/test_issue14_bolt.py --image ermya-graph-community:0.13.2`. This does not
+replace an existing container or publish to a remote registry.

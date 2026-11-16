@@ -26,6 +26,20 @@ pub struct CacheKey {
     pub params_signature: u64,
 }
 
+// Hash fields in exactly the same order as CacheKey, without allocating a
+// String on a cache hit. Equivalent still compares both fields after hashing.
+#[derive(Hash)]
+struct CacheKeyRef<'a> {
+    query: &'a str,
+    params_signature: u64,
+}
+
+impl moka::Equivalent<CacheKey> for CacheKeyRef<'_> {
+    fn equivalent(&self, key: &CacheKey) -> bool {
+        self.query == key.query && self.params_signature == key.params_signature
+    }
+}
+
 /// Deterministic hash of a `$param` binding map.
 ///
 /// Empty maps hash to `0`. Otherwise, entries are sorted by key (so the
@@ -150,6 +164,13 @@ impl QueryCache {
         self.inner.get(key)
     }
 
+    pub(crate) fn get_query(&self, query: &str, params_signature: u64) -> Option<GqlStatement> {
+        self.inner.get(&CacheKeyRef {
+            query,
+            params_signature,
+        })
+    }
+
     /// Insert a parsed statement into the cache.
     ///
     /// If the cache is at capacity, the least-recently-used entry is evicted.
@@ -190,6 +211,23 @@ mod tests {
         let stmt = ermya_graph::gql::parse_statement(q).unwrap(); // OK: test
         cache.insert(key(q), stmt.clone());
         assert_eq!(cache.get(&key(q)).unwrap(), stmt); // OK: test
+    }
+
+    #[test]
+    fn borrowed_lookup_preserves_query_and_parameter_identity() {
+        let cache = QueryCache::new(16);
+        let query = "RETURN $value";
+        let stmt = ermya_graph::gql::parse_statement("RETURN 1").unwrap();
+        cache.insert(
+            CacheKey {
+                query: query.to_owned(),
+                params_signature: 42,
+            },
+            stmt.clone(),
+        );
+        assert_eq!(cache.get_query(query, 42), Some(stmt));
+        assert!(cache.get_query(query, 43).is_none());
+        assert!(cache.get_query("RETURN $other", 42).is_none());
     }
 
     #[test]

@@ -5,6 +5,14 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-16
+
+- Enforce UNIQUE and write/write conflicts atomically at transaction commit.
+- Fix MVCC deletion before materialization and historical-index vacuum cleanup.
+- Return explicit Bolt constraint/conflict errors and release rejected transactions.
+- Update TLS dependencies and add official-driver concurrency regressions.
+- Provide a versioned Community container build with source revision metadata.
+
 ## [0.13.1] - 2026-08-23
 
 ### Changed
@@ -33,6 +41,8 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added Rust, Python, security-audit and container CI gates.
 - Added reproducible Python wheel builds and tagged GitHub release automation.
 
-[Unreleased]: https://github.com/mojobytes/ermya-graph/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/mojobytes/ermya-graph/compare/v0.13.2...HEAD
 [0.13.1]: https://github.com/mojobytes/ermya-graph/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/mojobytes/ermya-graph/releases/tag/v0.13.0
+
+[0.13.2]: https://github.com/mojobytes/ermya-graph/compare/v0.13.1...v0.13.2

@@ -1311,6 +1311,11 @@ mod tests {
     // shrink the per-frame stack budget the guard protects. Boxing would add
     // indirection on every MATCH (the common path) to save bytes off the hot
     // recursion's reach — a worse trade than 5.6's. Deliberate, baseline bumped.
+    //
+    // Issue #12 added MutationStatement::where_clause (+56) so mutations retain
+    // their selection predicate. GqlStatement is still outside parse_expr's
+    // recursive frames and Expr remains 56 bytes. Accept the top-level size
+    // of 360; retain an exact guard against any further unreviewed growth.
 
     #[test]
     fn ast_expr_size_is_pinned_at_baseline() {
@@ -1325,7 +1330,7 @@ mod tests {
     fn ast_gql_statement_size_is_pinned_at_baseline() {
         assert_eq!(
             std::mem::size_of::<GqlStatement>(),
-            304,
+            360,
             "GqlStatement size changed — see comment above ast_expr_size_is_pinned_at_baseline",
         );
     }

@@ -30,6 +30,8 @@ use crate::storage::memory::MemoryBackend;
 use crate::storage::page::{PAGE_HEADER_SIZE, PageHeader, PageType, finalize_page, magic};
 use crate::wal::record::WalRecord;
 
+mod transaction_validation;
+
 /// Default adjacency cache capacity for in-memory graphs.
 const DEFAULT_ADJ_CACHE_CAPACITY: usize = 65_536;
 
@@ -824,6 +826,9 @@ impl Graph {
     /// `txn_id` is not live, or a storage error if the WAL redo/sync fails (in
     /// which case the transaction remains active and can be retried or rolled
     /// back).
+    /// [`Error::WriteConflict`] or [`Error::ConstraintViolation`] rejects the
+    /// complete write set before WAL emission. Roll back that transaction;
+    /// a write conflict requires a new snapshot before retrying the work.
     pub fn commit_txn(&mut self, txn_id: u64) -> Result<()> {
         if !self.txn_is_active(txn_id) {
             return Err(Error::TxnNotActive(txn_id));
@@ -851,6 +856,9 @@ impl Graph {
             }
             out
         };
+
+        self.validate_write_conflicts(txn_id, &committed)?;
+        self.validate_unique_commit(&committed)?;
 
         // Phase 1: durable WAL. Redos first, then the Commit marker, then sync.
         // A failure here leaves the transaction active and invisible.
@@ -965,12 +973,9 @@ impl Graph {
     /// at or after the watermark, is kept so a live reader can still resolve its
     /// snapshot through it.
     ///
-    /// This is a pure optimization: category B (counts, exists-sets, indexes,
-    /// adjacency) was already reconciled at [`Graph::commit_txn`], and the WAL
-    /// redo was already made durable there. The vacuum therefore writes the page
-    /// slot WITHOUT re-logging the WAL (the data is already durable) and WITHOUT
-    /// touching category B (already up to date). A vacuum that never runs only
-    /// costs memory and page-read latency, never correctness.
+    /// Committed versions are already durable in the WAL. Materialization
+    /// writes their pages without logging again and removes historical index
+    /// entries only after no active snapshot needs them.
     ///
     /// # Errors
     ///
@@ -988,64 +993,60 @@ impl Graph {
             .ok_or(Error::MvccNotEnabled)?
             .drain_vacuumable(watermark);
         let count = drained.len();
-        for (key, new_state, old_base) in drained {
-            self.materialize_to_page(key, new_state.as_ref())?;
-            self.apply_vacuum_category_b(key, new_state.as_ref(), old_base.as_ref())?;
+        for chain in drained {
+            self.materialize_to_page(chain.key, chain.state.as_ref())?;
+            self.apply_vacuum_category_b(chain.key, chain.state.as_ref(), &chain.history)?;
         }
         Ok(count)
     }
 
-    /// Applies the category-B baja a vacuumed version implies, after its page has
-    /// been materialized: a `Deleted` end state removes the record from category
-    /// B (exists-set, indexes, adjacency, count); an updated node/edge removes
-    /// the stale old-value index entries left as a committed superset since
-    /// commit. An insert with no old base needs nothing — its alta was applied at
-    /// commit. Returns errors from adjacency I/O.
+    /// Once no snapshot needs the history, remove all historical index entries
+    /// and restore only the materialized version. Inserts followed by deletes
+    /// may never have had a page-resident base, but still need count cleanup.
     fn apply_vacuum_category_b(
         &mut self,
         key: crate::mvcc::EntityKey,
-        new_state: Option<&crate::mvcc::EntitySnapshot>,
-        old_base: Option<&crate::mvcc::EntitySnapshot>,
+        state: Option<&crate::mvcc::EntitySnapshot>,
+        history: &[crate::mvcc::EntitySnapshot],
     ) -> Result<()> {
         use crate::mvcc::{EntityKey, EntitySnapshot};
-        match (key, new_state, old_base) {
-            (
-                EntityKey::Node(_),
-                Some(EntitySnapshot::Deleted) | None,
-                Some(EntitySnapshot::Node(prior)),
-            ) => {
-                self.reconcile_node_delete(prior);
-            }
-            (
-                EntityKey::Edge(_),
-                Some(EntitySnapshot::Deleted) | None,
-                Some(EntitySnapshot::Edge(prior)),
-            ) => {
-                self.reconcile_edge_delete(prior)?;
-            }
-            (
-                EntityKey::Node(_),
-                Some(EntitySnapshot::Node(new)),
-                Some(EntitySnapshot::Node(prior)),
-            ) => {
-                let id_val = new.id.0;
-                if prior.label() != new.label() {
-                    self.node_label_index.remove(prior.label(), id_val);
+        for version in history {
+            match version {
+                EntitySnapshot::Node(node) => {
+                    self.node_label_index.remove(node.label(), node.id.0);
+                    self.node_property_index.remove_node(
+                        node.label(),
+                        node.properties(),
+                        node.id.0,
+                    );
+                    if matches!(state, None | Some(EntitySnapshot::Deleted))
+                        && self.node_exists.contains(&node.id.0)
+                    {
+                        self.reconcile_node_delete(node);
+                    }
                 }
+                EntitySnapshot::Edge(edge) => {
+                    self.edge_label_index.remove(edge.label(), edge.id.0);
+                    self.remove_pair_index(edge.source.0, edge.target.0, edge.label(), edge.id.0);
+                    if matches!(state, None | Some(EntitySnapshot::Deleted))
+                        && self.edge_exists.contains(&edge.id.0)
+                    {
+                        self.reconcile_edge_delete(edge)?;
+                    }
+                }
+                EntitySnapshot::Deleted => {}
+            }
+        }
+        match (key, state) {
+            (EntityKey::Node(id), Some(EntitySnapshot::Node(node))) => {
+                self.node_label_index.insert(node.label(), id.0);
                 self.node_property_index
-                    .remove_node(prior.label(), prior.properties(), id_val);
+                    .insert_node(node.label(), node.properties(), id.0);
             }
-            (
-                EntityKey::Edge(_),
-                Some(EntitySnapshot::Edge(new)),
-                Some(EntitySnapshot::Edge(prior)),
-            ) if prior.label() != new.label() => {
-                let id_val = new.id.0;
-                self.edge_label_index.remove(prior.label(), id_val);
-                self.remove_pair_index(prior.source.0, prior.target.0, prior.label(), id_val);
+            (EntityKey::Edge(id), Some(EntitySnapshot::Edge(edge))) => {
+                self.edge_label_index.insert(edge.label(), id.0);
+                self.insert_pair_index(edge.source.0, edge.target.0, edge.label(), id.0);
             }
-            // An edge update with an unchanged label left no stale index entry;
-            // an insert with no old base already applied its alta at commit.
             _ => {}
         }
         Ok(())
@@ -1251,50 +1252,6 @@ impl Graph {
             .ok_or(Error::TxnNotActive(txn_id))
     }
 
-    /// The state a new delta for `key` chains onto within `txn_id`: the
-    /// transaction's own most-recent uncommitted new-state for `key` if it has
-    /// already written it, else the committed page version. This keeps a second
-    /// write in the same transaction correct (it overwrites its own pending
-    /// version, not the stale committed base).
-    fn node_chain_base(&self, txn_id: u64, id: NodeId) -> Option<crate::mvcc::EntitySnapshot> {
-        if let Some(table) = self.delta_table.as_ref()
-            && let Some(chain) = table.chain_for(crate::mvcc::EntityKey::Node(id))
-            && let Some(own) = chain
-                .iter()
-                .find(|d| d.txn_id() == txn_id && d.commit_ts().is_none())
-        {
-            return own.new_state().cloned();
-        }
-        self.node_exists
-            .contains(&id.0)
-            .then(|| {
-                self.read_node(id.0)
-                    .ok()
-                    .map(crate::mvcc::EntitySnapshot::Node)
-            })
-            .flatten()
-    }
-
-    /// Edge analogue of [`Graph::node_chain_base`].
-    fn edge_chain_base(&self, txn_id: u64, id: EdgeId) -> Option<crate::mvcc::EntitySnapshot> {
-        if let Some(table) = self.delta_table.as_ref()
-            && let Some(chain) = table.chain_for(crate::mvcc::EntityKey::Edge(id))
-            && let Some(own) = chain
-                .iter()
-                .find(|d| d.txn_id() == txn_id && d.commit_ts().is_none())
-        {
-            return own.new_state().cloned();
-        }
-        self.edge_exists
-            .contains(&id.0)
-            .then(|| {
-                self.read_edge(id.0)
-                    .ok()
-                    .map(crate::mvcc::EntitySnapshot::Edge)
-            })
-            .flatten()
-    }
-
     /// Creates a node inside transaction `txn_id` as a pending delta; nothing
     /// is written to the page until [`Graph::commit_txn`].
     ///
@@ -1355,8 +1312,9 @@ impl Graph {
         // written and then never seen.
         self.reject_if_append_only(id)?;
         // The node must be visible to this transaction to be updatable.
-        self.node_in_txn(txn_id, id)?;
-        let prior = self.node_chain_base(txn_id, id);
+        let prior = Some(crate::mvcc::EntitySnapshot::Node(
+            self.node_in_txn(txn_id, id)?,
+        ));
         let new = crate::mvcc::EntitySnapshot::Node(node.clone());
         self.charge_txn_memory(txn_id, delta_bytes(prior.as_ref(), &new))?;
         let delta = crate::mvcc::Delta::new(txn_id, prior, Some(new), crate::mvcc::DeltaOp::Update);
@@ -1377,8 +1335,9 @@ impl Graph {
         }
         // Issue #43: see `update_node_in_txn` — append-only nodes take no deltas.
         self.reject_if_append_only(id)?;
-        self.node_in_txn(txn_id, id)?;
-        let prior = self.node_chain_base(txn_id, id);
+        let prior = Some(crate::mvcc::EntitySnapshot::Node(
+            self.node_in_txn(txn_id, id)?,
+        ));
         let new = crate::mvcc::EntitySnapshot::Deleted;
         self.charge_txn_memory(txn_id, delta_bytes(prior.as_ref(), &new))?;
         let delta = crate::mvcc::Delta::new(txn_id, prior, Some(new), crate::mvcc::DeltaOp::Delete);
@@ -1437,8 +1396,9 @@ impl Graph {
         if !self.txn_is_active(txn_id) {
             return Err(Error::TxnNotActive(txn_id));
         }
-        self.edge_in_txn(txn_id, id)?;
-        let prior = self.edge_chain_base(txn_id, id);
+        let prior = Some(crate::mvcc::EntitySnapshot::Edge(
+            self.edge_in_txn(txn_id, id)?,
+        ));
         let new = crate::mvcc::EntitySnapshot::Edge(edge.clone());
         self.charge_txn_memory(txn_id, delta_bytes(prior.as_ref(), &new))?;
         let delta = crate::mvcc::Delta::new(txn_id, prior, Some(new), crate::mvcc::DeltaOp::Update);
@@ -1456,8 +1416,9 @@ impl Graph {
         if !self.txn_is_active(txn_id) {
             return Err(Error::TxnNotActive(txn_id));
         }
-        self.edge_in_txn(txn_id, id)?;
-        let prior = self.edge_chain_base(txn_id, id);
+        let prior = Some(crate::mvcc::EntitySnapshot::Edge(
+            self.edge_in_txn(txn_id, id)?,
+        ));
         let new = crate::mvcc::EntitySnapshot::Deleted;
         self.charge_txn_memory(txn_id, delta_bytes(prior.as_ref(), &new))?;
         let delta = crate::mvcc::Delta::new(txn_id, prior, Some(new), crate::mvcc::DeltaOp::Delete);
@@ -1687,14 +1648,16 @@ impl Graph {
                 continue;
             }
             if let Some(ids) = self.node_property_index.lookup_set(label, prop_key, value) {
-                let conflict =
-                    exclude_id.map_or(!ids.is_empty(), |ex| ids.iter().any(|&id| id != ex));
-                if conflict {
-                    return Err(Error::ConstraintViolation {
-                        label: label.to_owned(),
-                        prop: prop_key.clone(),
-                        value: format!("{value:?}"),
-                    });
+                for &id in ids {
+                    if Some(id) != exclude_id
+                        && self.committed_node_has_value(NodeId(id), label, prop_key, value)?
+                    {
+                        return Err(Error::ConstraintViolation {
+                            label: label.to_owned(),
+                            prop: prop_key.clone(),
+                            value: format!("{value:?}"),
+                        });
+                    }
                 }
             }
         }
@@ -2299,6 +2262,10 @@ impl Graph {
             Self::estimate_entity_bytes(size_of::<Node>(), node.label(), node.properties());
         self.charge_batch_op(batch_bytes)?;
 
+        if self.mvcc_enabled() && !self.is_append_only_node(id) {
+            return self.with_autocommit(|graph, txn| graph.update_node_in_txn(txn, id, node));
+        }
+
         if !self.node_exists.contains(&id.0) {
             return Err(Error::NodeNotFound(id));
         }
@@ -2332,6 +2299,24 @@ impl Graph {
         // caps even though it frees on-disk space (unlike the disk quota, which
         // exempts deletes). A delete carries no record bytes of its own.
         self.charge_batch_op(REMOVED_APPROX_SIZE)?;
+        if self.mvcc_enabled() && !self.is_append_only_node(id) {
+            return self.with_autocommit(|graph, txn| {
+                let node = graph.node_in_txn(txn, id)?;
+                let mut edges = HashSet::new();
+                for edge in graph
+                    .outgoing_edges_in_txn(txn, id)?
+                    .into_iter()
+                    .chain(graph.incoming_edges_in_txn(txn, id)?)
+                {
+                    edges.insert(edge.id);
+                }
+                for edge in edges {
+                    graph.remove_edge_in_txn(txn, edge)?;
+                }
+                graph.remove_node_in_txn(txn, id)?;
+                Ok(node)
+            });
+        }
         if !self.node_exists.contains(&id.0) {
             return Err(Error::NodeNotFound(id));
         }
@@ -2631,6 +2616,13 @@ impl Graph {
         // Issue #37: a delete still counts as one batch operation (see
         // `remove_node`). A delete carries no record bytes of its own.
         self.charge_batch_op(REMOVED_APPROX_SIZE)?;
+        if self.mvcc_enabled() {
+            return self.with_autocommit(|graph, txn| {
+                let edge = graph.edge_in_txn(txn, id)?;
+                graph.remove_edge_in_txn(txn, id)?;
+                Ok(edge)
+            });
+        }
         if !self.edge_exists.contains(&id.0) {
             return Err(Error::EdgeNotFound(id));
         }
