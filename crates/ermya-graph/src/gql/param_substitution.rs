@@ -50,13 +50,8 @@ pub enum ParamError {
     /// looks them up by the string key `n.to_string()`.
     #[error("missing positional parameter: ${0}")]
     MissingPositionalParameter(u32),
-    /// A value in the params map could not be lowered to an AST literal —
-    /// the variant is reserved for future `GqlValue` extensions (Node,
-    /// Relationship, Map). With the current `GqlValue` (`Null`, `Bool`,
-    /// `Int`, `Float`, `Str`, `List`) every value lowers successfully, so
-    /// this variant is currently unreachable in practice. Kept in the API
-    /// so adding a new `GqlValue` variant produces a compile error here
-    /// instead of silently widening behaviour.
+    /// A parameter cannot be represented as a property literal, for example
+    /// a Map supplied to an inline pattern property.
     #[error("parameter ${name} has type {got} which cannot be used as a literal")]
     UnsupportedParamValue {
         /// The parameter name that triggered the error (named lookup) or
@@ -95,12 +90,51 @@ pub fn apply<S: BuildHasher>(
     }
 }
 
+fn visit_match<S: BuildHasher>(
+    mc: &mut super::ast::MatchClause,
+    params: &HashMap<String, GqlValue, S>,
+) -> Result<(), ParamError> {
+    for path in &mut mc.patterns {
+        visit_path(path, params)?;
+    }
+    Ok(())
+}
+
+fn visit_path<S: BuildHasher>(
+    path: &mut super::ast::PathPattern,
+    params: &HashMap<String, GqlValue, S>,
+) -> Result<(), ParamError> {
+    let props = path.start.props.iter_mut().chain(
+        path.hops
+            .iter_mut()
+            .flat_map(|(edge, node)| edge.props.iter_mut().chain(node.props.iter_mut())),
+    );
+    for (_, expr) in props {
+        // Maps are supported in whole-entity SET, but cannot be property values.
+        if let Expr::ParamRef(reference) = expr {
+            let key = match reference {
+                ParamRef::Named(name) => name.clone(),
+                ParamRef::Positional(n) => n.to_string(),
+            };
+            if matches!(params.get(&key), Some(GqlValue::Map(_))) {
+                return Err(ParamError::UnsupportedParamValue {
+                    name: key,
+                    got: "Map",
+                });
+            }
+        }
+        visit_expr(expr, params)?;
+    }
+    Ok(())
+}
+
 // ── Statement-level walkers ──────────────────────────────────────────────────
 
 fn visit_query<S: BuildHasher>(
     q: &mut GqlQuery,
     params: &HashMap<String, GqlValue, S>,
 ) -> Result<(), ParamError> {
+    visit_match(&mut q.match_clause, params)?;
     if let Some(ref mut u) = q.unwind_clause {
         visit_unwind(u, params)?;
     }
@@ -136,14 +170,9 @@ fn visit_mutation<S: BuildHasher>(
     if let Some(ref mut w) = m.where_clause {
         visit_where(w, params)?;
     }
-    // MATCH inline-prop constraints are stored as `Vec<(String, Literal)>`
-    // on `MatchClause`/`NodePattern`/`RelPattern`, not `Vec<(String, Expr)>`,
-    // so no `Expr::ParamRef` can appear there and no walker is needed. If
-    // the AST is ever changed to allow `Expr`-typed inline props (i.e. to
-    // permit `MATCH (n {id: $id})`), this walker MUST grow a recursion into
-    // `m.match_clause` and the corresponding pattern-property arms — the
-    // compiler will silently consume an unsubstituted ParamRef otherwise
-    // because the debug_assert in `eval_expr` is debug-only.
+    if let Some(mc) = &mut m.match_clause {
+        visit_match(mc, params)?;
+    }
     visit_mutation_clause(&mut m.mutation, params)?;
     if let Some(ref mut set) = m.set_clause {
         visit_set(set, params)?;
@@ -237,7 +266,12 @@ fn visit_pipeline<S: BuildHasher>(
 ) -> Result<(), ParamError> {
     for stage in &mut p.stages {
         match stage {
-            PipelineStage::Match { where_clause, .. } => {
+            PipelineStage::Match {
+                clause,
+                where_clause,
+                ..
+            } => {
+                visit_match(clause, params)?;
                 if let Some(w) = where_clause {
                     visit_where(w, params)?;
                 }
@@ -379,10 +413,7 @@ fn visit_expr<S: BuildHasher>(
             }
             Ok(())
         }
-        Expr::ShortestPath { .. } => {
-            // PathPattern carries only Literal props; nothing to walk.
-            Ok(())
-        }
+        Expr::ShortestPath { pattern } => visit_path(pattern, params),
         Expr::Subscript { list, index } => {
             visit_expr(list, params)?;
             visit_expr(index, params)

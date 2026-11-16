@@ -5,6 +5,13 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-11-16
+
+- Bind and authorize databases on Bolt BEGIN, including the Community default.
+- Support parameters in node and relationship MATCH property maps for reads and mutations.
+- Reject database switches during transactions and preserve rollback state.
+- Test official sync/async drivers and Python 3.15.2 in CI.
+
 ## [0.13.2] - 2026-11-16
 
 - Enforce UNIQUE and write/write conflicts atomically at transaction commit.

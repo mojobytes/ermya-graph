@@ -250,7 +250,7 @@ backups) live in a separate repository and are not part of this one.
 [ermya.com](https://ermya.com)
 
 Build the versioned Community image locally with `docker build --build-arg
-SOURCE_REVISION=<git-commit> -t ermya-graph-community:0.13.2 .`. Validate it in an
+SOURCE_REVISION=<git-commit> -t ermya-graph-community:0.13.3 .`. Validate it in an
 isolated container using `uv run --no-project --with neo4j==4.4.11 python
-scripts/test_issue14_bolt.py --image ermya-graph-community:0.13.2`. This does not
+scripts/test_issue14_bolt.py --image ermya-graph-community:0.13.3`. This does not
 replace an existing container or publish to a remote registry.

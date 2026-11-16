@@ -556,7 +556,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "ermya-graph"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "crc32fast",
  "criterion",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "ermya-graph-cli"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "clap",
  "comfy-table",
@@ -592,14 +592,14 @@ dependencies = [
 
 [[package]]
 name = "ermya-graph-config"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "ermya-graph-cypher"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "ermya-graph",
  "ermya-graph-config",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "ermya-graph-protocol"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "bytes",
  "rcgen",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "ermya-graph-python"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "ermya-graph",
  "pyo3",
@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "ermya-graph-server"
-version = "0.13.2"
+version = "0.13.3"
 dependencies = [
  "argon2",
  "async-trait",

@@ -125,7 +125,7 @@ pub struct NodePattern {
     /// The node labels to match.
     pub labels: Vec<String>,
     /// Inline property equality constraints.
-    pub props: Vec<(String, Literal)>,
+    pub props: Vec<(String, Expr)>,
 }
 
 /// An edge selector: `-[var:LABEL {key: value}]->`.
@@ -136,7 +136,7 @@ pub struct EdgePattern {
     /// The relationship types to match.
     pub labels: Vec<String>,
     /// Inline property equality constraints.
-    pub props: Vec<(String, Literal)>,
+    pub props: Vec<(String, Expr)>,
     /// The direction of traversal.
     pub direction: AstDirection,
     /// Fixed hop or variable-length range.
