@@ -40,6 +40,9 @@ jobs:
       # existing release thresholds. Keep functional coverage in debug builds.
       - run: cargo test --workspace --exclude ermya-graph-python --features plain-tcp --locked -- --skip tests::gql_native_fastpath_throughput_regression_guard --skip tests::parse_cached_throughput_regression_guard
       - run: cargo test --release --locked -p ermya-graph-cypher --lib throughput_regression_guard -- --test-threads=1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.15.2"
       - name: Verify transaction integrity with the official Bolt driver
         run: |
           python3 -m pip install neo4j==4.4.11
@@ -50,10 +53,17 @@ jobs:
       - run: cargo audit
 
   python:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.12"]
+        include:
+          - python-version: "3.15.2"
+            os: ubuntu-latest
+          - python-version: "3.12"
+            os: ubuntu-24.04
+          - python-version: "3.9"
+            os: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
