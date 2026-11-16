@@ -145,11 +145,11 @@
     "known_boundary": "No serializable predicate-read guarantee. Existing MVCC raw metadata counts retain deferred deletion until vacuum; Cypher queries resolve visible records."
   },
   "operational_pending": [
-    "New versioned Community image to be built and tested in the next plan step; no deployment to the existing instance"
+    "Existing Community instance remains on 0.13.0; the new image is local only. PR #15 remains draft, not merged; issue #14 remains open."
   ],
   "candidate_binary_sha256": "d808fa3b9c527e5eba915f019cacf5fd69328e4a7cc61b3705e73e2c2b385da9",
   "candidate_build_command": "cargo +1.88.0 build --offline --locked -p ermya-graph-server --bin ermya-graph-server",
-  "candidate_source_state": "Fix commit ee47794050c66e68097691c981de7da2651ec85d; versioned image commit recorded in OCI metadata",
+  "candidate_source_state": "Image built from 190c3e91bc146f256a9d85d340849c5904307c3c; subsequent changes only adjust the test runner readiness check and record evidence, not server code",
   "official_driver_final": {
     "unique": {
       "clients": [
@@ -206,5 +206,60 @@
       "remaining": 0
     }
   },
-  "pr": "https://github.com/mojobytes/ermya-graph/pull/15"
+  "pr": "https://github.com/mojobytes/ermya-graph/pull/15",
+  "local_image": {
+    "unique": {
+      "clients": [
+        {
+          "committed": false,
+          "code": "Neo.ClientError.Schema.ConstraintValidationFailed",
+          "message": "constraint violation: unique constraint on :Issue14Unique330b09f05c7343fda516a2110180d0a4(key) already has value String(\"same\")"
+        },
+        {
+          "committed": true,
+          "value": 2
+        }
+      ],
+      "rows": [
+        {
+          "key": "same"
+        }
+      ],
+      "pass": true
+    },
+    "cas": {
+      "clients": [
+        {
+          "committed": false,
+          "code": "Neo.TransientError.Transaction.Outdated",
+          "message": "transaction write conflict; retry in a new transaction"
+        },
+        {
+          "committed": true,
+          "value": 2
+        }
+      ],
+      "rows": [
+        {
+          "version": 2
+        }
+      ],
+      "pass": true
+    },
+    "delete": {
+      "pass": true,
+      "rows": []
+    },
+    "image": {
+      "pass": true,
+      "version": "0.13.2",
+      "agent": "Neo4j/0.13.2",
+      "image_id": "sha256:8fbc9912fde8db12a9bab94120a53fac517f25b945c68ed99cfa51bde37de22f",
+      "source_revision": "190c3e9"
+    }
+  },
+  "local_image_source_commit": "190c3e91bc146f256a9d85d340849c5904307c3c",
+  "local_image_tag": "ermya-graph-community:0.13.2",
+  "local_image_test_command": "uv run --no-project --with neo4j==4.4.11 python scripts/test_issue14_bolt.py --image ermya-graph-community:0.13.2",
+  "local_image_build_log_sha256": "4223371eeea97a5a92f4bbcfcffe7baa996a8ed6d2e05bd498aaaffe961854b3"
 }

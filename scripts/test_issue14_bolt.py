@@ -18,7 +18,7 @@ import time
 import uuid
 
 from neo4j import GraphDatabase
-from neo4j.exceptions import Neo4jError
+from neo4j.exceptions import Neo4jError, ServiceUnavailable
 
 
 def probe(uri):
@@ -150,9 +150,14 @@ def main():
                         log.seek(0)
                         raise RuntimeError(log.read())
                     try:
-                        with socket.create_connection(("127.0.0.1", port), timeout=0.1):
-                            break
-                    except OSError:
+                        # Docker's port proxy can listen before the server is ready.
+                        # Require a complete TLS/Bolt handshake before the test starts.
+                        with GraphDatabase.driver(f"bolt+ssc://127.0.0.1:{port}", auth=None,
+                                                  connection_timeout=0.2) as driver:
+                            with driver.session(database="neo4j") as session:
+                                session.run("RETURN 1 AS ready").consume()
+                        break
+                    except (OSError, ServiceUnavailable):
                         time.sleep(0.05)
                 else:
                     raise TimeoutError("isolated server did not listen")
@@ -162,13 +167,19 @@ def main():
                         ["docker", "image", "inspect", container_image]))[0]
                     version = metadata["Config"]["Labels"]["org.opencontainers.image.version"]
                     with GraphDatabase.driver(f"bolt+ssc://127.0.0.1:{port}", auth=None) as driver:
-                        agent = driver.get_server_info().agent
+                        with driver.session(database="neo4j") as session:
+                            agent = session.run("RETURN 1 AS ready").consume().server.agent
                     report["image"] = {"pass": bool(version) and agent == f"Neo4j/{version}",
                                        "version": version, "agent": agent,
                                        "image_id": metadata["Id"],
                                        "source_revision": metadata["Config"]["Labels"]["org.opencontainers.image.revision"]}
                 print(json.dumps(report, indent=2))
                 return 0 if all(case["pass"] for case in report.values()) else 1
+            except Exception:
+                log.flush()
+                log.seek(0)
+                print(log.read(), file=sys.stderr)
+                raise
             finally:
                 if container_name:
                     subprocess.run(["docker", "stop", "--time", "5", container_name],
