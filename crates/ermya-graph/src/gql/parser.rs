@@ -23,7 +23,7 @@ use crate::gql::token::{self, Span, SpannedToken, Token};
 struct EdgeBracketContent {
     var: Option<String>,
     labels: Vec<String>,
-    props: Vec<(String, Literal)>,
+    props: Vec<(String, Expr)>,
     length: EdgeLength,
 }
 
@@ -899,7 +899,7 @@ impl Parser {
             return Err(Self::unsupported_feature("multi-label nodes"));
         }
 
-        // Optional inline properties `{key: literal, ...}`.
+        // Optional inline properties `{key: literal_or_parameter, ...}`.
         let props = if *self.peek() == Token::LBrace {
             self.parse_inline_props()?
         } else {
@@ -911,8 +911,8 @@ impl Parser {
         Ok(NodePattern { var, labels, props })
     }
 
-    /// Parses `{key: literal, key: literal, ...}`.
-    fn parse_inline_props(&mut self) -> crate::Result<Vec<(String, Literal)>> {
+    /// Parses literal or parameter constraints in a pattern property map.
+    fn parse_inline_props(&mut self) -> crate::Result<Vec<(String, Expr)>> {
         self.expect(&Token::LBrace)?;
         let mut props = Vec::with_capacity(4);
 
@@ -953,11 +953,15 @@ impl Parser {
         Ok((key, value))
     }
 
-    /// Parses a single `key: literal` property entry.
-    fn parse_prop_entry(&mut self) -> crate::Result<(String, Literal)> {
+    /// Parses a single literal or parameter property constraint.
+    fn parse_prop_entry(&mut self) -> crate::Result<(String, Expr)> {
         let key = self.expect_ident()?;
         self.expect(&Token::Colon)?;
-        let value = self.parse_literal_value()?;
+        let value = if *self.peek() == Token::Dollar {
+            self.parse_param_ref()?
+        } else {
+            Expr::Literal(self.parse_literal_value()?)
+        };
         Ok((key, value))
     }
 
@@ -2126,7 +2130,7 @@ mod tests {
         let node = &q.match_clause.patterns[0].start;
         assert_eq!(
             node.props,
-            vec![("name".into(), Literal::Str("Alice".into()))]
+            vec![("name".into(), Expr::Literal(Literal::Str("Alice".into())))]
         );
     }
 
@@ -2192,7 +2196,10 @@ mod tests {
         let (edge, _) = &q.match_clause.patterns[0].hops[0];
         assert_eq!(edge.var.as_deref(), Some("r"));
         assert_eq!(edge.labels, vec!["KNOWS".to_string()]);
-        assert_eq!(edge.props, vec![("since".into(), Literal::Int(2020))]);
+        assert_eq!(
+            edge.props,
+            vec![("since".into(), Expr::Literal(Literal::Int(2020)))]
+        );
         assert_eq!(edge.length, EdgeLength::Fixed);
     }
 

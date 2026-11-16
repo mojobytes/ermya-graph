@@ -102,7 +102,7 @@ def probe(uri):
     return report
 
 
-def main():
+def main(probe_fn=probe):
     container_image = sys.argv[2] if sys.argv[1] == "--image" else None
     binary = None if container_image else str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix="ermya-issue14-") as directory:
@@ -161,7 +161,7 @@ def main():
                         time.sleep(0.05)
                 else:
                     raise TimeoutError("isolated server did not listen")
-                report = probe(f"bolt+ssc://127.0.0.1:{port}")
+                report = probe_fn(f"bolt+ssc://127.0.0.1:{port}")
                 if container_image:
                     metadata = json.loads(subprocess.check_output(
                         ["docker", "image", "inspect", container_image]))[0]

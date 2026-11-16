@@ -777,26 +777,22 @@ async fn discard_clears_pending_result() {
     assert_eq!(dict_bool(&resp, "has_more"), Some(false));
 }
 #[tokio::test]
-async fn begin_before_database_bind_fails_request_invalid() {
-    // A BEGIN with no prior RUN has no bound database to open a transaction on.
-    let auth = Arc::new(NoAuthProvider);
+async fn begin_before_database_bind_selects_default_database() {
     let (registry, _tmp) = common::single_db_registry().await;
-    let (mut writer, mut reader, _shutdown) = common::spawn_single_db_handler(auth, registry).await;
-
+    let (mut writer, mut reader, _shutdown) =
+        common::spawn_single_db_handler(Arc::new(NoAuthProvider), registry).await;
     bolt_send(&mut writer, &hello_no_auth()).await;
     let _ = bolt_recv(&mut reader).await;
-
     bolt_send(&mut writer, &BoltRequest::Begin { extra: vec![] }).await;
-    let resp = bolt_recv(&mut reader).await;
-    assert!(
-        matches!(resp, BoltResponse::Failure { .. }),
-        "expected FAILURE for BEGIN before any database bind"
-    );
-    let msg = dict_str(&resp, "message").unwrap_or_default();
-    assert!(
-        msg.contains("no database selected"),
-        "expected 'no database selected' message, got: {msg}"
-    );
+    assert!(matches!(
+        bolt_recv(&mut reader).await,
+        BoltResponse::Success { .. }
+    ));
+    bolt_send(&mut writer, &BoltRequest::Rollback).await;
+    assert!(matches!(
+        bolt_recv(&mut reader).await,
+        BoltResponse::Success { .. }
+    ));
 }
 #[tokio::test]
 async fn begin_commit_after_bind_succeeds() {

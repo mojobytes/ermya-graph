@@ -1731,10 +1731,37 @@ fn compile_path_pattern<G: GraphAccess + ?Sized>(
     pp: &PathPattern,
     deadline: Option<Instant>,
 ) -> crate::Result<Vec<PatternMatch>> {
+    let mut impossible = false;
+    for (_, expr) in path_properties(pp) {
+        if !matches!(expr, Expr::Literal(_)) {
+            return Err(Error::GqlCompileError(
+                "pattern parameters must be bound before execution".into(),
+            ));
+        }
+        impossible |= pattern_property_value(expr).is_none();
+    }
+    if impossible {
+        return Ok(Vec::new());
+    }
     if has_variable_length_hop(pp) {
         compile_path_pattern_with_varlen(graph, pp, deadline)
     } else {
         compile_path_pattern_fixed(graph, pp)
+    }
+}
+
+fn path_properties(pp: &PathPattern) -> impl Iterator<Item = &(String, Expr)> {
+    pp.start.props.iter().chain(
+        pp.hops
+            .iter()
+            .flat_map(|(edge, node)| edge.props.iter().chain(node.props.iter())),
+    )
+}
+
+fn pattern_property_value(expr: &Expr) -> Option<Property> {
+    match expr {
+        Expr::Literal(literal) => literal_to_property(literal),
+        _ => None,
     }
 }
 
@@ -1837,7 +1864,7 @@ fn seed_start_node<G: GraphAccess + ?Sized>(
     // additional property constraints beyond the first one used for lookup.
     let candidates = if let (Some(label), Some((key, lit))) = (np.labels.first(), np.props.first())
     {
-        literal_to_property(lit).map_or_else(
+        pattern_property_value(lit).map_or_else(
             || graph.nodes_by_label(label),
             |value| graph.nodes_by_label_and_property(label, key, &value),
         )
@@ -1876,8 +1903,8 @@ fn node_matches_pattern(node: &crate::Node, np: &NodePattern) -> bool {
         return false;
     }
     for (key, lit) in &np.props {
-        let Some(expected) = literal_to_property(lit) else {
-            continue;
+        let Some(expected) = pattern_property_value(lit) else {
+            return false;
         };
         match node.properties().get(key) {
             Some(actual) if *actual == expected => {}
@@ -1895,8 +1922,8 @@ fn edge_matches_pattern(edge: &crate::Edge, ep: &EdgePattern) -> bool {
         return false;
     }
     for (key, lit) in &ep.props {
-        let Some(expected) = literal_to_property(lit) else {
-            continue;
+        let Some(expected) = pattern_property_value(lit) else {
+            return false;
         };
         match edge.properties().get(key) {
             Some(actual) if *actual == expected => {}
@@ -2135,7 +2162,7 @@ fn compile_node_to_builder<'g, G: GraphAccess + ?Sized>(
     }
 
     for (key, lit) in &np.props {
-        if let Some(prop) = literal_to_property(lit) {
+        if let Some(prop) = pattern_property_value(lit) {
             builder = builder.where_prop(key.clone(), prop);
         }
     }
@@ -2161,7 +2188,7 @@ fn compile_edge_to_builder<'g, G: GraphAccess + ?Sized>(
     }
 
     for (key, lit) in &ep.props {
-        if let Some(prop) = literal_to_property(lit) {
+        if let Some(prop) = pattern_property_value(lit) {
             builder = builder.where_edge_prop(key.clone(), prop);
         }
     }
@@ -2525,6 +2552,12 @@ fn try_aggregate_pushdown<G: GraphAccess + ?Sized>(
     }
 
     let pp = &query.match_clause.patterns[0];
+    // Non-comparable values must take the empty-match path, never an index
+    // lookup with the property constraint silently removed.
+    if path_properties(pp).any(|(_, expr)| pattern_property_value(expr).is_none()) {
+        return None;
+    }
+
     let np = &pp.start;
 
     // Build the node constraint from the AST NodePattern.
@@ -2535,7 +2568,7 @@ fn try_aggregate_pushdown<G: GraphAccess + ?Sized>(
         props: np
             .props
             .iter()
-            .filter_map(|(k, lit)| literal_to_property(lit).map(|p| (k.clone(), p)))
+            .filter_map(|(k, expr)| pattern_property_value(expr).map(|p| (k.clone(), p)))
             .collect(),
     };
 

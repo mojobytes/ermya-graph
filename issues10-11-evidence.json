@@ -1,0 +1,136 @@
+{
+  "issues": [
+    10,
+    11
+  ],
+  "base_commit": "0c0ce9ff22746d3fe7a09414e0eca6d36c5481ba",
+  "version": "0.13.3",
+  "drivers": [
+    "neo4j==6.4.1",
+    "neo4j==4.4.11"
+  ],
+  "validation": {
+    "issue10_red": {
+      "sha256": "1cddbafd376ef4202e04327af70beb236348eaa767e0a2a28dea38265805ab23",
+      "result": {
+        "explicit_database": {
+          "pass": false,
+          "code": "Neo.ClientError.Request.Invalid"
+        },
+        "default_database": {
+          "pass": false,
+          "code": "Neo.ClientError.Request.Invalid"
+        },
+        "async_execute_query": {
+          "pass": false,
+          "code": "Neo.ClientError.Request.Invalid"
+        }
+      }
+    },
+    "issue10_green": {
+      "sha256": "286f4a5c1bfa41a5e311769e29f1eea46bc2dd8e5a74338111f235bf1b61e196",
+      "result": {
+        "explicit_database": {
+          "pass": true
+        },
+        "default_database": {
+          "pass": true
+        },
+        "async_execute_query": {
+          "pass": true
+        }
+      }
+    },
+    "issue11_red": {
+      "sha256": "8c50576082bb4fc9596fc960a285bef7567fa269c1526debbb882e63e2f7e4b6"
+    },
+    "issue11_green": {
+      "sha256": "d2e994ea7d3da15a448e48fe21f61b225b7da403db2ff7413fc874a58432d0a1",
+      "result": {
+        "node_read": {
+          "pass": true
+        },
+        "targeted_mutations": {
+          "pass": true
+        },
+        "relationship_mutation": {
+          "pass": true
+        },
+        "no_interpolation": {
+          "pass": true
+        },
+        "null_is_not_wildcard": {
+          "pass": true
+        },
+        "missing_parameter": {
+          "pass": true,
+          "code": "Neo.ClientError.Statement.ParameterMissing"
+        },
+        "cleanup": {
+          "pass": true
+        }
+      }
+    },
+    "issue14_regression": {
+      "sha256": "788c40276601f7def52b02fa7f01f0e49f5f20950ee2fa964cba0870f0d17a53",
+      "result": {
+        "unique": {
+          "clients": [
+            {
+              "committed": false,
+              "code": "Neo.ClientError.Schema.ConstraintValidationFailed",
+              "message": "constraint violation: unique constraint on :Issue14Unique2fc4952052304f749531429e46463795(key) already has value String(\"same\")"
+            },
+            {
+              "committed": true,
+              "value": 2
+            }
+          ],
+          "rows": [
+            {
+              "key": "same"
+            }
+          ],
+          "pass": true
+        },
+        "cas": {
+          "clients": [
+            {
+              "committed": false,
+              "code": "Neo.TransientError.Transaction.Outdated",
+              "message": "transaction write conflict; retry in a new transaction"
+            },
+            {
+              "committed": true,
+              "value": 2
+            }
+          ],
+          "rows": [
+            {
+              "version": 2
+            }
+          ],
+          "pass": true
+        },
+        "delete": {
+          "pass": true,
+          "rows": []
+        }
+      }
+    },
+    "workspace_2535_passed": {
+      "sha256": "8e09d18a991ea946dcc0a79c6c9c8a527ad7eaa0d48d207358fdf00be8800513"
+    },
+    "clippy": {
+      "sha256": "efe1caeab8e3ac514a1404449d472602d4fbd95eda00a25aa07ce2012e071424"
+    },
+    "release_throughput": {
+      "sha256": "caa4ea401e844172d2ed8038514685517496e8f9bc02bc08abb5350b9f5ef18b"
+    },
+    "baseline_throughput": {
+      "sha256": "1866859ff688ae284fbd1279817c1cdd9b720ae59210b3d926e02a3db73c4be6"
+    }
+  },
+  "performance_note": "Initial concurrent run failed adjacency and parser timing gates. Sequential functional run passed; isolated parser run initially below threshold, then both baseline and candidate passed unchanged thresholds in consecutive comparison runs. No thresholds reduced.",
+  "scope": "Community single database aliases retained; relationship SET support is unchanged. Existing instance stays on 0.13.2."
+}

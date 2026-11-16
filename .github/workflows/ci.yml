@@ -48,6 +48,11 @@ jobs:
           python3 -m pip install neo4j==4.4.11
           cargo build --locked -p ermya-graph-server --bin ermya-graph-server
           python3 scripts/test_issue14_bolt.py target/debug/ermya-graph-server
+      - name: Verify BEGIN and pattern parameters with the modern Bolt driver
+        run: |
+          python3 -m pip install neo4j==6.4.1
+          python3 scripts/test_issue10_bolt.py target/debug/ermya-graph-server
+          python3 scripts/test_issue11_bolt.py target/debug/ermya-graph-server
       - run: cargo package -p ermya-graph --locked
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit

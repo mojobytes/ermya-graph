@@ -204,13 +204,15 @@ where
     /// verdad. En el árbol de pago el aviso no salta, porque allí sí se lee.
     #[allow(dead_code)]
     admin_registry: MultiTenantHandle,
-    /// The database acquired on the first RUN of this session — `None`
-    /// until the client sends a RUN carrying `extra["db"]`. Dropping
+    /// The database acquired by RUN or BEGIN — `None` until binding. Dropping
     /// the handler releases the underlying connection slot through
     /// `DbHandle`'s RAII guard.
     db_handle: Option<DbHandle>,
+    /// Requested name that acquired this handle; Community may resolve an alias
+    /// to its single canonical database name.
+    bound_database_request: Option<String>,
     /// Per-session accessor wrapping `db_handle.graph()`. Built on the
-    /// first successful RUN (in `try_bind_database`) so subsequent RUNs
+    /// first successful RUN or BEGIN (in `try_bind_database`) so subsequent RUNs
     /// dispatch through it without reconstructing a `DefaultGraphAccessor`
     /// per statement. `None` until that first bind; the query/mutation
     /// dispatchers are only reached after a successful bind, so they expect
@@ -466,6 +468,7 @@ where
             registry,
             admin_registry,
             db_handle: None,
+            bound_database_request: None,
             session_accessor: None,
             accessor_factory: Arc::new(|h| {
                 Arc::new(crate::DefaultGraphAccessor::new(h.graph())) as Arc<dyn GraphAccessor>
@@ -681,7 +684,7 @@ where
             BoltRequest::Discard { extra } => self.handle_discard(&extra).await,
             BoltRequest::Reset => self.handle_reset().await,
             BoltRequest::Goodbye => Ok(true),
-            BoltRequest::Begin { .. } => self.handle_begin().await,
+            BoltRequest::Begin { extra } => self.handle_begin(&extra).await,
             BoltRequest::Commit => self.handle_commit().await,
             BoltRequest::Rollback => self.handle_rollback().await,
         }
@@ -826,7 +829,7 @@ where
     }
 
     /// Lazy-bind the per-session [`DbHandle`] using `extra["db"]` from
-    /// the RUN metadata (Bolt 4.0+ contract — see Task 10-bis).
+    /// RUN or BEGIN metadata. BEGIN supplies the default on an unbound session.
     ///
     /// Returns `Ok(true)` when a FAILURE has been sent on the wire and
     /// the caller must abort the RUN. Returns `Ok(false)` when binding
@@ -842,9 +845,8 @@ where
     /// official driver fail as soon as the application opens its
     /// second `session(database=...)` against a different name.
     ///
-    /// (Mid-**transaction** switching — a different `db` arriving on a
-    /// RUN inside an open BEGIN/COMMIT — is a different rule and stays
-    /// reserved for the day explicit transactions land.)
+    /// Switching databases inside an explicit transaction is rejected before
+    /// releasing its handle, so RESET can roll back the original transaction.
     ///
     /// Cases:
     ///
@@ -873,6 +875,18 @@ where
         // Clone the registry Arc into a local so the match below stays readable.
         let registry = self.registry.clone();
 
+        if run_extra
+            .iter()
+            .any(|(key, value)| key == "db" && !matches!(value, PackStreamValue::String(_)))
+        {
+            self.fail_with(
+                "Neo.ClientError.Request.Invalid",
+                "database must be a string",
+            )
+            .await?;
+            return Ok(true);
+        }
+
         let requested_db = run_extra
             .iter()
             .find(|(k, _)| k == "db")
@@ -885,7 +899,20 @@ where
 
         match (&self.db_handle, requested_db) {
             (Some(_), None) => Ok(false),
-            (Some(handle), Some(name)) if handle.database_name() == name => Ok(false),
+            (Some(handle), Some(name))
+                if handle.database_name() == name
+                    || self.bound_database_request.as_deref() == Some(name) =>
+            {
+                Ok(false)
+            }
+            (Some(_), Some(_)) if self.open_txn.is_some() => {
+                self.fail_with(
+                    "Neo.ClientError.Request.Invalid",
+                    "cannot change database inside an open transaction",
+                )
+                .await?;
+                Ok(true)
+            }
             (Some(_), Some(name)) => {
                 // Per-RUN rebind. Drop the previous handle so RAII
                 // releases its connection slot before we ask the
@@ -894,6 +921,7 @@ where
                 // database could see N+1 acquires under heavy
                 // multi-DB churn from the same session.
                 self.db_handle = None;
+                self.bound_database_request = None;
                 self.session_accessor = None;
                 self.acquire_and_bind(&registry, name, &username).await
             }
@@ -960,6 +988,7 @@ where
                 let accessor = (self.accessor_factory)(&handle);
                 self.session_accessor = Some(accessor);
                 self.db_handle = Some(handle);
+                self.bound_database_request = Some(db_name.to_owned());
                 // Re-emit the auth-success event with the freshly-bound
                 // database name so audit consumers that correlate
                 // sessions with databases (the common case in v0.4.x)
@@ -1810,14 +1839,8 @@ where
         Ok(false)
     }
 
-    /// Handles `BEGIN`: opens an explicit transaction on the session's bound
-    /// database and stores its `txn_id` so subsequent statements know a
-    /// transaction is open.
-    ///
-    /// A `BEGIN` before the session has bound a database (no `RUN` yet) has no
-    /// graph to open the transaction on, so it fails with `Request.Invalid`
-    /// rather than panicking — the driver must select a database first.
-    async fn handle_begin(&mut self) -> Result<bool> {
+    /// Bind and authorize the database before opening an explicit transaction.
+    async fn handle_begin(&mut self, extra: &[(String, PackStreamValue)]) -> Result<bool> {
         if self.open_txn.is_some() {
             self.failed = true;
             self.send_failure(
@@ -1827,15 +1850,23 @@ where
             .await?;
             return Ok(false);
         }
-        let Some(accessor) = self.session_accessor.as_deref() else {
-            self.failed = true;
-            self.send_failure(
-                "Neo.ClientError.Request.Invalid",
-                "no database selected; run a statement selecting a database before BEGIN",
-            )
-            .await?;
-            return Ok(false);
+        let default_extra;
+        let extra = if self.db_handle.is_none() && !extra.iter().any(|(key, _)| key == "db") {
+            default_extra = vec![(
+                "db".to_owned(),
+                PackStreamValue::String(crate::registry::COMMUNITY_DATABASE.to_owned()),
+            )];
+            &default_extra
+        } else {
+            extra
         };
+        if self.try_bind_database(extra).await? {
+            return Ok(false);
+        }
+        let accessor = self
+            .session_accessor
+            .as_deref()
+            .expect("successful binding installs accessor");
         match accessor.begin_txn() {
             Ok(txn_id) => {
                 self.open_txn = Some(txn_id);
