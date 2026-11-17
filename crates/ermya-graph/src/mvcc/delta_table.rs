@@ -132,19 +132,18 @@ impl DeltaTable {
             .sum()
     }
 
-    /// Drain fully committed chains older than every active snapshot, retaining
-    /// their versions so vacuum can remove all historical index entries.
-    pub(crate) fn drain_vacuumable(&self, watermark: Option<u64>) -> Vec<VacuumedChain> {
+    /// Snapshot safe chains; retain them until materialization succeeds.
+    pub(crate) fn vacuumable(&self, watermark: Option<u64>) -> Vec<VacuumedChain> {
         let mut out = Vec::new();
         for shard in &self.shards {
-            let mut guard = shard.write().expect("delta table shard lock poisoned");
+            let guard = shard.read().expect("delta table shard lock poisoned");
             let vacuumable: Vec<EntityKey> = guard
                 .iter()
                 .filter(|(_, chain)| chain.all_safe_to_vacuum(watermark))
                 .map(|(key, _)| *key)
                 .collect();
             for key in vacuumable {
-                if let Some(chain) = guard.remove(&key) {
+                if let Some(chain) = guard.get(&key) {
                     let newest = chain.newest().and_then(|d| d.new_state().cloned());
                     let history = chain
                         .iter()
@@ -161,6 +160,14 @@ impl DeltaTable {
             }
         }
         out
+    }
+
+    /// Called under Graph's exclusive mutation lock after materialization.
+    pub(crate) fn finish_vacuum(&self, key: EntityKey) {
+        self.shards[shard_index(key, self.shards.len())]
+            .write()
+            .expect("delta table shard lock poisoned")
+            .remove(&key);
     }
 
     /// Removes `key`'s deltas authored by `txn_id`. If the chain becomes empty,
@@ -259,31 +266,33 @@ mod tests {
     }
 
     #[test]
-    fn drain_vacuumable_removes_fully_safe_chain_and_returns_newest_state() {
+    fn vacuumable_retains_chain_until_materialization_finishes() {
         let table = DeltaTable::new(16);
         let key = EntityKey::Node(NodeId(5));
         table.push_delta(key, committed_node_delta(2, 5, "Old"));
         table.push_delta(key, committed_node_delta(3, 5, "New")); // newest
 
-        let drained = table.drain_vacuumable(None); // no live txn: all safe
+        let drained = table.vacuumable(None); // no live txn: all safe
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].key, key);
         match &drained[0].state {
             Some(EntitySnapshot::Node(n)) => assert_eq!(n.label(), "New"),
             other => panic!("expected newest node state, got {other:?}"),
         }
-        // Chain is gone after draining.
+        // A failed materialization can retry while the chain remains available.
+        assert!(table.chain_for(key).is_some());
+        table.finish_vacuum(key);
         assert!(table.chain_for(key).is_none());
     }
 
     #[test]
-    fn drain_vacuumable_keeps_chain_with_a_delta_at_or_after_watermark() {
+    fn vacuumable_keeps_chain_with_a_delta_at_or_after_watermark() {
         let table = DeltaTable::new(16);
         let key = EntityKey::Node(NodeId(7));
         table.push_delta(key, committed_node_delta(2, 7, "Safe"));
         table.push_delta(key, committed_node_delta(6, 7, "TooNew")); // commit_ts == watermark
 
-        let drained = table.drain_vacuumable(Some(6));
+        let drained = table.vacuumable(Some(6));
         assert!(
             drained.is_empty(),
             "chain with commit_ts >= watermark must be kept"
@@ -292,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn drain_vacuumable_keeps_chain_with_uncommitted_delta() {
+    fn vacuumable_keeps_chain_with_uncommitted_delta() {
         let table = DeltaTable::new(16);
         let key = EntityKey::Node(NodeId(9));
         table.push_delta(key, committed_node_delta(2, 9, "Committed"));
@@ -302,7 +311,7 @@ mod tests {
             Delta::new(2, None, Some(EntitySnapshot::Deleted), DeltaOp::Delete),
         );
 
-        let drained = table.drain_vacuumable(None);
+        let drained = table.vacuumable(None);
         assert!(
             drained.is_empty(),
             "an uncommitted delta blocks vacuum of the chain"
@@ -311,14 +320,14 @@ mod tests {
     }
 
     #[test]
-    fn drain_vacuumable_returns_deleted_for_tombstone_newest() {
+    fn vacuumable_returns_deleted_for_tombstone_newest() {
         let table = DeltaTable::new(16);
         let key = EntityKey::Node(NodeId(11));
         let mut del = Delta::new(1, None, Some(EntitySnapshot::Deleted), DeltaOp::Delete);
         del.stamp_commit(3);
         table.push_delta(key, del);
 
-        let drained = table.drain_vacuumable(None);
+        let drained = table.vacuumable(None);
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].state, Some(EntitySnapshot::Deleted));
     }

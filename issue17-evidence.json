@@ -1,0 +1,232 @@
+{
+  "issue": 17,
+  "base_commit": "116421c4b32c923e872037b3eb2743fae2440268",
+  "preserved_backup": "/home/santi/repos/MojoBytes/ermya-ecosystem/ermya-graph/.backups/community-before-0.13.3-20261116T202932Z/data",
+  "original_volume": "stopped; untouched",
+  "files": {
+    ".ermya-version": "7cdeab87db467f7e0f3caa12359678fdaea737ef9a7e706f9a1fe16ab930b772",
+    "system/wal.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "system/overflow.db": "f02546f4a988985601738d9e1d2f38ac1e5c16847955fe4c37ee12a3d426fca1",
+    "system/system.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "system/edges.db": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "system/strings.db": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "system/nodes.db": "c3360f6363b45bdf54bf613829def9e90cd7770fd3f0e5a1723e51f3b74964d9",
+    "system/adjacency.db": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "system/graph.meta": "11e05628d5053f9a3bb58b6d2c4fa96ec8f13de4f8e2b1bf70c7533c3957f46e",
+    "databases/neo4j/wal.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "databases/neo4j/overflow.db": "a779113e6db5e57cd9eb648bb6a1416b5fd97850649b9c10e90848d66ebcb653",
+    "databases/neo4j/schema.bin": "4aa6d4ae5f5e77a05a6f2b8d53b1cde6621f35e51380ed3c1fe30a39dceb8c8d",
+    "databases/neo4j/edges.db": "fe37f086cf71ea0e1ae9169fdb3e93dd04c2d089da33d024c93502b66849356b",
+    "databases/neo4j/strings.db": "877927a765c352025b70948c4fef192cefef67b626e56f093b0fab12735a49fb",
+    "databases/neo4j/index.bin": "97c7190031f310e708e872b578030e2dd392cd3e75087ddefb97ba8dd0df8c03",
+    "databases/neo4j/nodes.db": "813ab20b60b6e193f15ab7f2260ca11826b6858ff357e62c5ec0716e43e51545",
+    "databases/neo4j/adjacency.db": "f574a44f2f0ac15fc364a32bd7f8e9d420843dec47020fab22e0d0e53d669cc7",
+    "databases/neo4j/graph.meta": "4ea7a4014cd6c1b5cc149e9f8206928d89932d7ec93ad3929fe3e586a78e7763"
+  },
+  "metadata": {
+    "next_node_id": 283,
+    "next_edge_id": 1,
+    "node_count": 4,
+    "edge_count": 0
+  },
+  "requirements": [
+    {
+      "requirement": "Persistence prevention",
+      "state": "verified",
+      "evidence": "Rust synthetic RED/GREEN; nine persistence tests plus five fault points, allocator and shutdown tests; full workspace passes."
+    },
+    {
+      "requirement": "Recovered candidate",
+      "state": "verified_with_accepted_uncertainty",
+      "evidence": "Ten offline tests; four official-driver restarts retain complete property/label/ID fingerprint and new commits."
+    },
+    {
+      "requirement": "Local release and activation",
+      "state": "verified",
+      "evidence": "0.13.4 from a251eaa; image tests and six CI jobs passed; activated in new volume with two restarts and exact content fingerprint."
+    }
+  ],
+  "confirmed_defects": [
+    "MVCC checkpoint truncated redo before safe versions reached pages",
+    "Slab overwrite replaced the base value needed by an old reader",
+    "Free-list accepted duplicate releases and inherited live references",
+    "WAL replay left stale persisted label indexes",
+    "Record page scan bound counted occupied slots rather than highest occupied position",
+    "Shutdown discarded flush errors"
+  ],
+  "historical_cause_limit": "Old backup already contains a free-list page referenced by live node 10; the exact historical operation sequence is not reconstructed.",
+  "recovery": {
+    "candidate": "../.backups/issue17-recovery-candidate/neo4j",
+    "unchanged_node_ids": [
+      2,
+      3,
+      4
+    ],
+    "historical_properties_node_id": 10,
+    "quarantined_blob_count": 28,
+    "decision": "User explicitly accepted historical properties (possibly stale), preservation without resurrection of orphan blobs, and activation after validation on 2026-11-16.",
+    "content_sha256": "ffe7fb3c30277e3b041147442d65ab483608421128d06219c5dd8b305088e1fc",
+    "original_preserved": true
+  },
+  "review": {
+    "atomicity": "Version chains retained until successful materialization; pending writers keep WAL; old readers keep their base slab version.",
+    "security": "No credentials or raw user properties in evidence. Recovery rejects input overwrite, ambiguous historical candidates and unreconciled WAL.",
+    "scope": "Offline recovery deliberately supports node-only stores and small historical blobs; other cases fail closed. Free-list membership scan adds work proportional to free directory size per release.",
+    "compatibility": "No format migration. Non-MVCC slab reuse retained; previous overflow growth test passes unchanged."
+  },
+  "activation": {
+    "image": "ermya-graph-community:0.13.4",
+    "image_id": "sha256:ae7bbee2eda22c8f7387977eab08ad794fbc5cd3466a09d209d8d5c170de8044",
+    "source_revision": "a251eaaac0c44a0b720e5cf8214d5651225f99cc",
+    "volume": "community_ermya-graph-data-0_13_4",
+    "original_volume_preserved": "community_ermya-graph-data",
+    "nodes": 4,
+    "content_sha256": "ffe7fb3c30277e3b041147442d65ab483608421128d06219c5dd8b305088e1fc",
+    "verified_restarts": 2,
+    "write_read_delete": true,
+    "port": "127.0.0.1:7688",
+    "status": "active"
+  },
+  "validation": {
+    "ci_run": 44043329593,
+    "ci_commit": "a251eaaac0c44a0b720e5cf8214d5651225f99cc",
+    "ci_jobs": 6,
+    "ci_result": "success",
+    "image_restarts": [
+      {
+        "cycle": 0,
+        "stop": "terminate",
+        "verified_nodes": 0,
+        "preexisting_nodes": 4,
+        "preexisting_sha256": "ffe7fb3c30277e3b041147442d65ab483608421128d06219c5dd8b305088e1fc",
+        "pass": true
+      },
+      {
+        "cycle": 1,
+        "stop": "kill",
+        "verified_nodes": 1,
+        "preexisting_nodes": 4,
+        "preexisting_sha256": "ffe7fb3c30277e3b041147442d65ab483608421128d06219c5dd8b305088e1fc",
+        "pass": true
+      },
+      {
+        "cycle": 2,
+        "stop": "terminate",
+        "verified_nodes": 2,
+        "preexisting_nodes": 4,
+        "preexisting_sha256": "ffe7fb3c30277e3b041147442d65ab483608421128d06219c5dd8b305088e1fc",
+        "pass": true
+      },
+      {
+        "cycle": 3,
+        "stop": "terminate",
+        "verified_nodes": 3,
+        "preexisting_nodes": 4,
+        "preexisting_sha256": "ffe7fb3c30277e3b041147442d65ab483608421128d06219c5dd8b305088e1fc",
+        "pass": true
+      }
+    ],
+    "image_regressions": {
+      "10": {
+        "explicit_database": {
+          "pass": true
+        },
+        "default_database": {
+          "pass": true
+        },
+        "async_execute_query": {
+          "pass": true
+        },
+        "image": {
+          "pass": true,
+          "version": "0.13.4",
+          "agent": "Neo4j/0.13.4",
+          "image_id": "sha256:ae7bbee2eda22c8f7387977eab08ad794fbc5cd3466a09d209d8d5c170de8044",
+          "source_revision": "a251eaaac0c44a0b720e5cf8214d5651225f99cc"
+        }
+      },
+      "11": {
+        "node_read": {
+          "pass": true
+        },
+        "targeted_mutations": {
+          "pass": true
+        },
+        "relationship_mutation": {
+          "pass": true
+        },
+        "no_interpolation": {
+          "pass": true
+        },
+        "null_is_not_wildcard": {
+          "pass": true
+        },
+        "missing_parameter": {
+          "pass": true,
+          "code": "Neo.ClientError.Statement.ParameterMissing"
+        },
+        "cleanup": {
+          "pass": true
+        },
+        "image": {
+          "pass": true,
+          "version": "0.13.4",
+          "agent": "Neo4j/0.13.4",
+          "image_id": "sha256:ae7bbee2eda22c8f7387977eab08ad794fbc5cd3466a09d209d8d5c170de8044",
+          "source_revision": "a251eaaac0c44a0b720e5cf8214d5651225f99cc"
+        }
+      },
+      "14": {
+        "unique": {
+          "clients": [
+            {
+              "committed": true,
+              "value": 1
+            },
+            {
+              "committed": false,
+              "code": "Neo.ClientError.Schema.ConstraintValidationFailed",
+              "message": "constraint violation: unique constraint on :Issue14Uniquea415bb049e454ef3ba978ed210a2dfab(key) already has value String(\"same\")"
+            }
+          ],
+          "rows": [
+            {
+              "key": "same"
+            }
+          ],
+          "pass": true
+        },
+        "cas": {
+          "clients": [
+            {
+              "committed": false,
+              "code": "Neo.TransientError.Transaction.Outdated",
+              "message": "transaction write conflict; retry in a new transaction"
+            },
+            {
+              "committed": true,
+              "value": 2
+            }
+          ],
+          "rows": [
+            {
+              "version": 2
+            }
+          ],
+          "pass": true
+        },
+        "delete": {
+          "pass": true,
+          "rows": []
+        },
+        "image": {
+          "pass": true,
+          "version": "0.13.4",
+          "agent": "Neo4j/0.13.4",
+          "image_id": "sha256:ae7bbee2eda22c8f7387977eab08ad794fbc5cd3466a09d209d8d5c170de8044",
+          "source_revision": "a251eaaac0c44a0b720e5cf8214d5651225f99cc"
+        }
+      }
+    }
+  }
+}

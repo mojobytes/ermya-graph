@@ -187,3 +187,24 @@ async fn vacuum_once_reclaims_committed_version_memory() {
 
     mgr.close_all(Duration::from_secs(1)).await;
 }
+
+#[tokio::test]
+async fn close_all_checked_reports_persistence_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_dir = tmp.path().join("graph");
+    let manager = SingleDatabaseManager::new(
+        build_test_users(),
+        db_dir.clone(),
+        "graph".into(),
+        EngineLimits::default(),
+    )
+    .await
+    .unwrap();
+    std::fs::create_dir(db_dir.join("index.bin.tmp")).unwrap();
+    assert!(
+        manager
+            .close_all_checked(Duration::from_secs(1))
+            .await
+            .is_err()
+    );
+}

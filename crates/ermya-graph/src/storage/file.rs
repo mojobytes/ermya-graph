@@ -185,6 +185,17 @@ impl FileBackend {
         meta.set_dirty();
         write_meta(&meta_path, &meta)?;
 
+        if needs_truncate {
+            // Recovery changes record membership after the last index snapshot.
+            // Invalidate durably before discarding the journal, including when
+            // this process exits again before Graph has persisted rebuilt indexes.
+            match fs::remove_file(dir.join("index.bin")) {
+                Ok(()) => File::open(&dir)?.sync_all()?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
         let wal = if config.wal_enabled {
             let mut w = WalWriter::open(&wal_path)?;
             if needs_truncate {
@@ -658,6 +669,10 @@ impl StorageBackend for FileBackend {
     }
 
     fn write_page(&mut self, file: DataFile, page_id: PageId, data: &PageBuf) -> Result<()> {
+        #[cfg(test)]
+        if file == DataFile::Nodes {
+            test_faults::hit(test_faults::Point::NodeWrite)?;
+        }
         if page_id >= self.file_page_count(file) {
             return Err(Error::CorruptPage {
                 file: file.file_name(),
@@ -732,16 +747,19 @@ impl StorageBackend for FileBackend {
     }
 
     fn flush(&mut self) -> Result<()> {
+        #[cfg(test)]
+        test_faults::hit(test_faults::Point::PagesFlush)?;
         for df in crate::storage::backend::ALL_DATA_FILES {
             self.pool.flush_file(df)?;
         }
 
         // Meta is written last (per architecture doc)
+        #[cfg(test)]
+        test_faults::hit(test_faults::Point::MetaFlush)?;
         self.flush_meta()?;
 
-        // Checkpoint + truncate the WAL after all data is durable.
-        self.wal_checkpoint_and_truncate()?;
-
+        // Only Graph knows whether committed MVCC versions are still pending.
+        // Flushing pages does not authorize discarding their WAL redo.
         Ok(())
     }
 
@@ -788,7 +806,11 @@ impl StorageBackend for FileBackend {
     fn wal_checkpoint_and_truncate(&mut self) -> Result<()> {
         if let Some(ref mut wal) = self.wal {
             wal.append(WalRecord::Checkpoint { lsn: 0 })?;
+            #[cfg(test)]
+            test_faults::hit(test_faults::Point::CheckpointSync)?;
             wal.sync()?;
+            #[cfg(test)]
+            test_faults::hit(test_faults::Point::WalTruncate)?;
             wal.truncate()?;
             // The journal is empty again, so whatever made a checkpoint due has
             // just been satisfied. Leaving this set would re-trigger a
@@ -1710,3 +1732,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+pub mod test_faults;

@@ -87,3 +87,6 @@ pub use gql::eval_set_value;
 
 #[doc(hidden)]
 pub use gql::literal_to_property;
+
+#[cfg(test)]
+mod issue17_tests;
