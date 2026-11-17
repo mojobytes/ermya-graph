@@ -110,6 +110,12 @@ def main():
                 finally:
                     if name:
                         subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=15)
+                        # Rootless Docker maps container IDs to subordinate host IDs.
+                        # Restore deletable permissions only on this disposable fixture.
+                        if cycle == 3 or sys.exc_info()[0] is not None:
+                            subprocess.run(["docker", "run", "--rm", "--user", "0", "--entrypoint", "chmod",
+                                            "-v", f"{root}:/test", container_image, "-R", "a+rwX", "/test/data"],
+                                           check=True, capture_output=True, timeout=15)
                     if server.poll() is None:
                         server.kill()
                         server.wait(timeout=10)
